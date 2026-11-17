@@ -22,7 +22,7 @@ for (p in paquetes) {
 # ---- b.1 Importar base ----
 install.packages("readxl")  
 library(readxl)
-raw <- read_excel("data/base_tarea_2.xlsx", sheet = "DATA")
+raw <- read_excel("data/macro_monthly.xlsx", sheet = "DATA")
 
 # Limpiar nombres de columnas (tienen espacios al final)
 names(raw) <- trimws(names(raw))

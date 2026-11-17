@@ -1,15 +1,11 @@
 # Master's in Applied Economics
 
-Assignments, research projects and data analysis developed during my Master's in Applied Economics at UNIBE. Everything is written in R, mostly with R Markdown, using Dominican Republic macroeconomic data.
+Applied time series work on the Dominican Republic, from my Master's in Applied Economics at UNIBE. The three projects ask related questions: what drives inflation, how do external shocks reach it, and does the answer change with the economic regime? All code is in R, written mostly in R Markdown.
 
-## Projects
-
-| Folder | Topic | Methods |
+| Project | Question | Methods |
 |---|---|---|
-| [`tarea-1-arima-ipc`](tarea-1-arima-ipc) | Dynamics and persistence of Dominican inflation by CPI component | ARIMA, unit root tests, residual diagnostics |
-| [`tarea-2-svar`](tarea-2-svar) | Transmission of oil price shocks to Dominican inflation | VAR, recursive (Cholesky) and AB-type SVAR, sign restrictions, Blanchard-Quah |
-| [`tarea-3-nonlinear-time-series`](tarea-3-nonlinear-time-series) | Regime-dependent transmission of shocks in GDP growth, inflation and the policy rate | SETAR, LSTAR, TVAR, Markov-switching |
+| [01 · Dominican inflation by component](01-dominican-inflation-arima) | Why is headline inflation noisy while core inflation is slow and persistent? | ARIMA, unit root tests, residual diagnostics |
+| [02 · Oil shocks and inflation](02-oil-shocks-inflation-svar) | How does an oil price shock pass through to prices in a small, import-dependent economy? | VAR, Cholesky and AB-type SVAR, sign restrictions, Blanchard-Quah |
+| [03 · Crisis regimes and nonlinear dynamics](03-regime-switching-nonlinear-var) | Do growth, inflation and the policy rate behave differently in crises? | SETAR, LSTAR, threshold VAR, Markov-switching |
 
-## Reproducing
-
-Each folder has its own README with the data it needs. The scripts read their data with relative paths, so open each project from its own folder. Packages are installed automatically by the scripts when missing.
+Each folder has its own README with the main results and the data needed to reproduce them. Scripts use relative paths, so open each project from its own folder.

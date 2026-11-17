@@ -57,7 +57,7 @@ cat("Paquetes cargados exitosamente\n")
 # NOTA: Las series fueron depuradas y armonizadas para construir una base mensual consistente.
 
 # Ruta del archivo
-ruta_archivo <- "data/base_tarea_1.xlsx"
+ruta_archivo <- "data/cpi_components_monthly.xlsx"
 
 # Leer datos
 datos_raw <- read_excel(ruta_archivo)
