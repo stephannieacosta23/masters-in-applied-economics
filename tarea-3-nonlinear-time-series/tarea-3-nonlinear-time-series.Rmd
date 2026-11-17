@@ -1,0 +1,1611 @@
+---
+title: "Práctica 2: Modelos No Lineales en la Media"
+subtitle: "Aplicación al caso dominicano (2007–2025)"
+author: "Stephannie Acosta"
+date: "`r format(Sys.Date(), '%d de %B de %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    number_sections: true
+    theme: flatly
+    highlight: tango
+    df_print: paged
+    fig_caption: true
+    code_folding: show
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    latex_engine: xelatex
+    fig_caption: true
+    keep_tex: false
+header-includes:
+  - \usepackage{booktabs}
+  - \usepackage{float}
+  - \usepackage[spanish]{babel}
+  - \usepackage{amsmath}
+  - \usepackage{amssymb}
+fontsize: 11pt
+geometry: margin=2.5cm
+link-citations: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo       = TRUE,
+  warning    = FALSE,
+  message    = FALSE,
+  fig.align  = "center",
+  fig.width  = 7,
+  fig.height = 4.2,
+  out.width  = "85%",
+  comment    = "#>",
+  dev        = "png",       
+  dpi        = 120        
+)
+
+# Semilla para reproducibilidad
+set.seed(2026)
+
+# Opciones de presentación numérica
+options(scipen = 999, digits = 4)
+```
+
+```{r librerias, include=FALSE}
+# Manejo de datos
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(readxl)
+library(zoo)
+
+# Series de tiempo y econometría
+library(tseries)      # adf.test, kpss.test
+library(urca)         # ur.df, ur.kpss, ur.pp
+library(forecast)     # ndiffs, auto.arima
+library(vars)         # VAR, irf
+library(tsDyn)        # setar, lstar, TVAR
+library(MSwM)         # msmFit
+library(MASS)         # mvrnorm (simulaciones IRF TVAR)
+
+# Visualización y reportes
+library(ggplot2)
+library(patchwork)
+library(scales)
+library(knitr)
+library(kableExtra)
+
+# Tema gráfico consistente
+theme_set(
+  theme_minimal(base_size = 11) +
+    theme(
+      panel.grid.minor = element_blank(),
+      plot.title = element_text(face = "bold"),
+      legend.position = "bottom"
+    )
+)
+
+# ------------------------------------------------------------------
+# Parche anti-enmascaramiento de funciones.
+# Varios paquetes (MASS, stats, tsDyn, etc.) definen funciones con
+# los mismos nombres que dplyr y las enmascaran al cargarse después.
+# Fijamos aquí las versiones correctas para evitar errores del tipo
+# "unused arguments" en select(), filter(), rename() y lag().
+# ------------------------------------------------------------------
+select <- dplyr::select
+filter <- dplyr::filter
+rename <- dplyr::rename
+lag    <- dplyr::lag
+```
+
+# Introducción
+
+Esta práctica tiene por objetivo estudiar modelos no lineales en la media 
+aplicados a variables macro-financieras de la República Dominicana. Se 
+comparan las dinámicas capturadas por un **VAR lineal** frente a 
+especificaciones no lineales como **SETAR**, **LSTAR**, **TVAR** y 
+**Markov-Switching (MS)**, con énfasis en la construcción e interpretación 
+de funciones impulso-respuesta (IRF) que puedan depender del régimen 
+económico vigente.
+
+El análisis se enmarca en un contexto de interés particular: el **shock 
+inflacionario 2021–2023**, donde la economía dominicana enfrentó presiones 
+externas (precios internacionales de alimentos y combustibles) combinadas 
+con un endurecimiento monetario sin precedentes por parte del Banco Central.
+
+---
+
+# Datos y transformaciones
+
+## Fuentes y frecuencia
+
+Las series provienen del **Banco Central de la República Dominicana (BCRD)** 
+y cubren el período 2007-Q1 a 2025-Q4 a frecuencia trimestral:
+
+- **Crecimiento del PIB** (`growth`): tasa de variación intertrimestral del 
+  PIB real encadenado (referencia 2007), desestacionalizado, calculada como 
+  $100 \cdot \Delta \log(\text{PIB}_t)$.
+- **Inflación** (`infl`): tasa trimestral del IPC, agregando el índice 
+  mensual a promedio trimestral y aplicando 
+  $100 \cdot \Delta \log(\text{IPC}_t)$.
+- **Tasa de política monetaria** (`rate`): TPM del BCRD, promediada 
+  trimestralmente a partir de la serie diaria/mensual.
+
+## Carga de datos
+
+### PIB real trimestral desestacionalizado
+
+El archivo `pib_real_trimestral.xlsx` fue preparado a partir de la publicación 
+oficial del BCRD *"Producto Interno Bruto (PIB). Índices de volumen 
+encadenados, referenciados al año 2007. Serie Original y Desestacionalizada, 
+trimestral"*, conservando únicamente la serie desestacionalizada y 
+organizando las columnas como: Año, Período, Índice, Variación.
+
+```{r carga-pib}
+pib_raw <- read_excel(
+  "data/raw/pib_real_trimestral.xlsx",
+  sheet = 1,
+  skip  = 0
+) |>
+  rename(
+    anio     = 1,
+    periodo  = 2,
+    pib_idx  = 3,
+    var_bcrd = 4
+  ) |>
+  # Filtrar filas "Promedio" y conservar solo trimestres I-IV
+  filter(periodo %in% c("I", "II", "III", "IV")) |>
+  mutate(
+    trim_num = recode(periodo, "I" = 1L, "II" = 2L, "III" = 3L, "IV" = 4L),
+    anio     = as.integer(anio),
+    date     = as.Date(as.yearqtr(paste0(anio, " Q", trim_num)), frac = 1),
+    pib_idx  = as.numeric(pib_idx),
+    # Crecimiento según el enunciado: 100 * log-diff
+    growth   = 100 * (log(pib_idx) - log(lag(pib_idx)))
+  ) |>
+  select(date, pib_idx, growth) |>
+  arrange(date)
+
+# Verificación rápida
+cat("Rango de la muestra:", 
+    format(min(pib_raw$date)), "→", format(max(pib_raw$date)), "\n")
+cat("Observaciones:", nrow(pib_raw), "\n")
+cat("Primer growth disponible:", 
+    format(pib_raw$date[!is.na(pib_raw$growth)][1]), "\n\n")
+
+head(pib_raw, 6)
+tail(pib_raw, 4)
+```
+
+### IPC mensual → trimestral
+
+El archivo `ipc_mensual.xls` proviene del BCRD, publicación *"Índice de 
+Precios al Consumidor (IPC), base anual: octubre 2019 – septiembre 2020 = 
+100"*. Viene en formato largo (una fila por mes) con las columnas: 
+Año, Mes, IPC, Variación mensual, F con Dic., 12 meses, Promedio. Solo 
+conservamos el **IPC en niveles** y la agregación trimestral se hace 
+promediando los tres meses de cada trimestre.
+
+```{r carga-ipc}
+# Mapeo de nombres de meses en español a números
+meses_es <- c(
+  "Enero" = 1, "Febrero" = 2, "Marzo" = 3, "Abril" = 4,
+  "Mayo"  = 5, "Junio"   = 6, "Julio" = 7, "Agosto" = 8,
+  "Septiembre" = 9, "Octubre" = 10, "Noviembre" = 11, "Diciembre" = 12
+)
+
+ipc_raw <- read_excel(
+  "data/raw/ipc_mensual.xls",
+  sheet = 1,
+  skip  = 0
+) |>
+  rename(
+    anio = 1,
+    mes  = 2,
+    ipc  = 3
+  ) |>
+  select(anio, mes, ipc) |>
+  mutate(
+    anio    = as.integer(anio),
+    mes_num = as.integer(meses_es[mes]),
+    ipc     = as.numeric(ipc),
+    # Construir fecha como primer día de cada mes
+    date    = as.Date(sprintf("%d-%02d-01", anio, mes_num))
+  ) |>
+  filter(!is.na(ipc), !is.na(date)) |>
+  arrange(date)
+
+# Verificación del IPC mensual
+cat("IPC mensual — rango:", 
+    format(min(ipc_raw$date)), "→", format(max(ipc_raw$date)), "\n")
+cat("Observaciones mensuales:", nrow(ipc_raw), "\n\n")
+head(ipc_raw, 6)
+
+# Agregación trimestral: promedio de los 3 meses de cada trimestre
+ipc_trim <- ipc_raw |>
+  mutate(trim = as.yearqtr(date)) |>
+  group_by(trim) |>
+  summarise(ipc = mean(ipc, na.rm = TRUE), .groups = "drop") |>
+  mutate(date = as.Date(trim, frac = 1)) |>
+  select(date, ipc) |>
+  arrange(date) |>
+  # Inflación trimestral: 100 * log-diff (consistente con el enunciado)
+  mutate(infl = 100 * (log(ipc) - log(lag(ipc))))
+
+cat("\nIPC trimestral — rango:", 
+    format(min(ipc_trim$date)), "→", format(max(ipc_trim$date)), "\n")
+cat("Observaciones trimestrales:", nrow(ipc_trim), "\n")
+cat("Primera inflación disponible:", 
+    format(ipc_trim$date[!is.na(ipc_trim$infl)][1]), "\n\n")
+head(ipc_trim, 6)
+tail(ipc_trim, 4)
+```
+
+### TPM mensual → trimestral
+
+El archivo `tpm_mensual.xlsx` proviene del BCRD, publicación *"Tasa de 
+Política Monetaria (TPM)"*, serie histórica mensual desde 2007. Las 
+columnas son: Año, Mes (abreviado), TPM (en formato porcentaje). La 
+agregación trimestral se hace por promedio de los tres meses del 
+trimestre.
+
+```{r carga-tpm}
+# Mapeo de meses en español (acepta nombres completos y abreviados)
+meses_tpm <- c(
+  "Enero" = 1, "Febrero" = 2, "Marzo" = 3, "Abril" = 4,
+  "Mayo"  = 5, "Junio"   = 6, "Julio" = 7, "Agosto" = 8,
+  "Septiembre" = 9, "Octubre" = 10, "Noviembre" = 11, "Diciembre" = 12,
+  # Fallback por si vienen abreviados
+  "Ene" = 1, "Feb" = 2, "Mar" = 3, "Abr" = 4,
+  "May" = 5, "Jun" = 6, "Jul" = 7, "Ago" = 8,
+  "Sep" = 9, "Oct" = 10, "Nov" = 11, "Dic" = 12
+)
+
+tpm_raw <- read_excel(
+  "data/raw/tpm_mensual.xlsx",
+  sheet = 1,
+  skip  = 0
+) |>
+  rename(
+    anio = 1,
+    mes  = 2,
+    tpm  = 3
+  ) |>
+  # Primero eliminamos filas vacías / encabezados repetidos antes de construir la fecha
+  filter(!is.na(anio), !is.na(mes), !is.na(tpm)) |>
+  mutate(
+    anio    = as.integer(anio),
+    mes_num = as.integer(meses_tpm[mes]),
+    # Limpieza robusta: si viene texto con "%", se remueve; si ya es numérico, pasa directo.
+    tpm_num = suppressWarnings(as.numeric(gsub("%", "", as.character(tpm))))
+  ) |>
+  # Eliminar cualquier fila donde el mapeo de mes haya fallado
+  filter(!is.na(mes_num), !is.na(tpm_num)) |>
+  mutate(
+    date = as.Date(sprintf("%d-%02d-01", anio, mes_num))
+  )
+
+# Detección de escala: si el máximo es <=1, los valores están en fracción (0.08) y se multiplican.
+# Si el máximo es >1, ya están en porcentaje (8). Esta decisión es escalar, no vectorial.
+escala <- if (max(tpm_raw$tpm_num, na.rm = TRUE) <= 1) 100 else 1
+tpm_raw <- tpm_raw |>
+  mutate(tpm = tpm_num * escala) |>
+  select(date, tpm) |>
+  arrange(date)
+
+cat("TPM mensual — rango:", 
+    format(min(tpm_raw$date)), "→", format(max(tpm_raw$date)), "\n")
+cat("Observaciones mensuales:", nrow(tpm_raw), "\n")
+cat("TPM mín:", round(min(tpm_raw$tpm), 2), "%  —  TPM máx:", 
+    round(max(tpm_raw$tpm), 2), "%\n\n")
+head(tpm_raw, 6)
+
+# Agregación trimestral por promedio
+tpm_trim <- tpm_raw |>
+  mutate(trim = as.yearqtr(date)) |>
+  group_by(trim) |>
+  summarise(rate = mean(tpm, na.rm = TRUE), .groups = "drop") |>
+  mutate(date = as.Date(trim, frac = 1)) |>
+  select(date, rate) |>
+  arrange(date)
+
+cat("\nTPM trimestral — rango:", 
+    format(min(tpm_trim$date)), "→", format(max(tpm_trim$date)), "\n")
+cat("Observaciones trimestrales:", nrow(tpm_trim), "\n\n")
+head(tpm_trim, 4)
+tail(tpm_trim, 4)
+```
+
+### Merge final y guardado
+
+```{r merge-df}
+df <- pib_raw |>
+  select(date, growth) |>
+  inner_join(ipc_trim |> select(date, infl), by = "date") |>
+  inner_join(tpm_trim, by = "date") |>
+  arrange(date) |>
+  na.omit()
+
+# Guardar para reuso
+if (!dir.exists("data/processed")) dir.create("data/processed", recursive = TRUE)
+saveRDS(df, "data/processed/df_trimestral.rds")
+
+# Resumen
+cat("Muestra final:", nrow(df), "trimestres\n")
+cat("Rango:", format(min(df$date)), "→", format(max(df$date)), "\n\n")
+head(df, 5)
+tail(df, 4)
+```
+
+## Resumen descriptivo
+
+```{r resumen}
+df |>
+  summarise(
+    n          = n(),
+    inicio     = format(min(date), "%Y-Q%q"),
+    fin        = format(max(date), "%Y-Q%q"),
+    growth_med = mean(growth),
+    growth_sd  = sd(growth),
+    infl_med   = mean(infl),
+    infl_sd    = sd(infl),
+    rate_med   = mean(rate),
+    rate_sd    = sd(rate)
+  ) |>
+  kable(
+    caption   = "Resumen de la muestra trimestral (RD, BCRD)",
+    digits    = 3,
+    booktabs  = TRUE
+  ) |>
+  kable_styling(latex_options = c("hold_position"))
+```
+
+```{r plot-series, fig.cap="Series trimestrales: crecimiento del PIB, inflación y TPM (RD)", fig.height=6}
+df_long <- df |>
+  pivot_longer(-date, names_to = "variable", values_to = "valor") |>
+  mutate(variable = recode(variable,
+    growth = "Crecimiento PIB (%)",
+    infl   = "Inflación (%)",
+    rate   = "TPM (%)"
+  ))
+
+ggplot(df_long, aes(x = date, y = valor)) +
+  geom_line(color = "steelblue4", linewidth = 0.6) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+  facet_wrap(~ variable, scales = "free_y", ncol = 1) +
+  labs(x = NULL, y = NULL,
+       title = "Evolución trimestral de las series macro (RD, 2007–2024)",
+       caption = "Fuente: BCRD. Elaboración propia.")
+```
+
+---
+
+# Diagnóstico y preparación
+
+## Estacionariedad
+
+Antes de estimar cualquier VAR es necesario verificar que las series sean 
+estacionarias en covarianza. Si alguna serie fuera $I(1)$, habría que 
+trabajar en diferencias o plantear un VECM. Se aplican **tres pruebas** 
+sobre cada variable para triangular el resultado:
+
+- **Augmented Dickey-Fuller (ADF)**: $H_0$: raíz unitaria.
+- **KPSS**: $H_0$: estacionariedad (prueba complementaria, invierte las hipótesis).
+- **Phillips-Perron (PP)**: $H_0$: raíz unitaria, robusta a heterocedasticidad.
+
+```{r tests-estacionariedad}
+library(tibble)
+
+# Función auxiliar: aplica los 3 tests a una serie y devuelve tibble
+tests_ur <- function(x, nombre) {
+  adf  <- suppressWarnings(tseries::adf.test(x))
+  kpss <- suppressWarnings(tseries::kpss.test(x))
+  pp   <- suppressWarnings(tseries::pp.test(x))
+  tibble(
+    Variable   = nombre,
+    `ADF (p)`  = round(adf$p.value,  4),
+    `KPSS (p)` = round(kpss$p.value, 4),
+    `PP (p)`   = round(pp$p.value,   4),
+    # Interpretación automática al 5%
+    Conclusion = case_when(
+      adf$p.value < 0.05 & pp$p.value < 0.05 & kpss$p.value > 0.05 ~ "Estacionaria I(0)",
+      adf$p.value < 0.05 & pp$p.value < 0.05                        ~ "Estacionaria (rechazo RU)",
+      adf$p.value > 0.05 & pp$p.value > 0.05                        ~ "Posible I(1)",
+      TRUE                                                          ~ "Ambigua"
+    )
+  )
+}
+
+tabla_ur <- bind_rows(
+  tests_ur(df$growth, "growth"),
+  tests_ur(df$infl,   "infl"),
+  tests_ur(df$rate,   "rate")
+)
+
+tabla_ur |>
+  kable(
+    caption  = "Pruebas de raíz unitaria y estacionariedad (p-valores)",
+    booktabs = TRUE
+  ) |>
+  kable_styling(latex_options = c("hold_position"))
+```
+
+**Interpretación:** Se espera que `growth` e `infl` (tasas trimestrales) sean 
+$I(0)$ por construcción. La TPM (`rate`), al ser una tasa en niveles con 
+alta persistencia, suele aparecer como $I(1)$ o cercana a la frontera; si 
+los tests sugieren raíz unitaria, en la literatura de política monetaria 
+se argumenta que las tasas oficiales son *bounded*, por lo que se trabaja 
+en niveles aceptando alta persistencia.
+
+```{r test-raiz-unitaria-profundo}
+# ADF con tendencia vs. sin tendencia para `rate` (caso más delicado)
+adf_rate_drift <- urca::ur.df(df$rate, type = "drift", selectlags = "AIC")
+adf_rate_trend <- urca::ur.df(df$rate, type = "trend", selectlags = "AIC")
+
+cat("ADF con drift (rate): estadístico =", 
+    round(adf_rate_drift@teststat[1], 3),
+    "| valores críticos:", paste(round(adf_rate_drift@cval[1, ], 2), collapse = " / "), "\n")
+
+cat("ADF con tendencia (rate): estadístico =", 
+    round(adf_rate_trend@teststat[1], 3),
+    "| valores críticos:", paste(round(adf_rate_trend@cval[1, ], 2), collapse = " / "), "\n")
+```
+
+## Selección de rezagos
+
+Se utiliza `VARselect()` para comparar los criterios de información Akaike 
+(AIC), Bayesiano-Schwarz (BIC), Hannan-Quinn (HQ) y Error Final de Predicción 
+(FPE), considerando un máximo plausible de 8 trimestres.
+
+```{r seleccion-rezagos}
+Y <- df |> select(growth, infl, rate) |> as.matrix()
+
+sel <- vars::VARselect(Y, lag.max = 8, type = "const")
+
+tabla_rezagos <- as.data.frame(sel$criteria) |>
+  tibble::rownames_to_column("Criterio") |>
+  tibble::as_tibble()
+
+tabla_rezagos |>
+  kable(
+    caption  = "Criterios de información para selección de rezagos (p = 1..8)",
+    booktabs = TRUE,
+    digits   = 3
+  ) |>
+  kable_styling(latex_options = c("hold_position", "scale_down"))
+
+cat("\nRezago óptimo por criterio:\n")
+print(sel$selection)
+```
+
+**Interpretación:** BIC y HQ tienden a favorecer modelos parsimoniosos (típicamente 
+$p=1$ o $p=2$), mientras que AIC y FPE pueden seleccionar órdenes mayores. 
+Dada la muestra de 70 observaciones trimestrales y siguiendo el enunciado 
+de la práctica, se trabajará con **$p = 2$** como especificación base — 
+suficiente para capturar dinámicas macro pero sin agotar grados de libertad.
+
+```{r definir-p}
+p_opt <- 2
+cat("Rezago elegido para el VAR base: p =", p_opt, "\n")
+```
+
+## Diagnósticos del VAR candidato
+
+Antes de declarar al VAR lineal como "modelo de referencia", se verifica 
+que cumpla los supuestos básicos: **estabilidad**, ausencia de 
+**autocorrelación** residual, **normalidad** y ausencia de **efectos ARCH**. 
+El incumplimiento de varios de estos supuestos, combinado con los tests de 
+no linealidad que siguen, constituye la justificación econométrica para 
+pasar a modelos no lineales.
+
+```{r var-diagnosticos}
+var_candidato <- vars::VAR(Y, p = p_opt, type = "const")
+
+# 1) Estabilidad: módulos de los eigenvalues de la matriz compañera (<1)
+mods <- Mod(vars::roots(var_candidato))
+cat("Estabilidad — máximo módulo de raíces:", round(max(mods), 4),
+    ifelse(max(mods) < 1, "(estable)", "(¡NO estable!)"), "\n\n")
+
+# 2) Autocorrelación residual (Portmanteau / Breusch-Godfrey)
+pt_asy <- vars::serial.test(var_candidato, lags.pt = 12, type = "PT.asymptotic")
+bg     <- vars::serial.test(var_candidato, lags.bg = 4,  type = "BG")
+
+# 3) Normalidad Jarque-Bera multivariante
+jb <- vars::normality.test(var_candidato, multivariate.only = TRUE)
+
+# 4) ARCH multivariante (heterocedasticidad condicional)
+ar <- vars::arch.test(var_candidato, lags.multi = 4, multivariate.only = TRUE)
+
+tabla_diag <- tribble(
+  ~Prueba,                          ~Estadistico,                              ~`p-valor`,
+  "Portmanteau (autocorrelación)",  round(pt_asy$serial$statistic, 3),         round(pt_asy$serial$p.value, 4),
+  "Breusch-Godfrey (autocorr.)",    round(bg$serial$statistic, 3),             round(bg$serial$p.value, 4),
+  "Jarque-Bera (normalidad)",       round(jb$jb.mul$JB$statistic, 3),          round(jb$jb.mul$JB$p.value, 4),
+  "ARCH multiv. (heterocedast.)",   round(ar$arch.mul$statistic, 3),           round(ar$arch.mul$p.value, 4)
+)
+
+tabla_diag |>
+  kable(
+    caption  = "Diagnósticos del VAR(2) candidato",
+    booktabs = TRUE
+  ) |>
+  kable_styling(latex_options = c("hold_position"))
+```
+
+**Interpretación esperada:** dados los outliers de 2020 (COVID) es muy probable 
+que la **normalidad** sea rechazada (Jarque-Bera con p < 0.05) y que haya 
+**efectos ARCH** significativos. La autocorrelación residual, si p es bien 
+elegida, no debería ser problema. Estos resultados refuerzan la necesidad 
+de considerar no linealidades y/o cambios de régimen.
+
+## Tests formales de no linealidad
+
+Los tests anteriores documentan problemas del VAR lineal; los que siguen 
+**identifican específicamente** la presencia de no linealidades en la media 
+de cada serie. Se combinan tests univariados clásicos con pruebas más 
+generales:
+
+- **Keenan (1985)**: tipo RESET, detecta no linealidad genérica.
+- **Tsay (1986)**: test de umbral tipo TAR.
+- **Terasvirta (1994)**: LM para transición suave LSTAR.
+- **BDS (Brock-Dechert-Scheinkman)**: test no paramétrico general sobre residuos AR.
+
+```{r tests-no-linealidad}
+# Paquetes: tsDyn para Keenan/Tsay, tseries para BDS, nonlinearTseries o 
+# manualmente para Terasvirta. Algunos requieren orden AR previo.
+
+# Determinamos orden AR univariado automático para cada serie (vía AIC)
+ar_order <- function(x) {
+  m <- stats::ar(x, aic = TRUE, order.max = 8)
+  max(1, m$order)
+}
+
+ord <- sapply(list(growth = df$growth, infl = df$infl, rate = df$rate), ar_order)
+cat("Órdenes AR seleccionados (AIC):\n")
+print(ord)
+
+# ---------------------------------------------------------------
+# Implementación manual de Keenan (1985) y Tsay (1986).
+# La API de tsDyn cambió y las funciones Keenan.test/Tsay.test
+# ya no están disponibles con esos nombres, así que las codificamos.
+# ---------------------------------------------------------------
+
+# Keenan (1985): test tipo RESET para no linealidad en modelos AR.
+# Paso 1: ajustar AR(m). Paso 2: regresar Y_t sobre rezagos y Y_hat^2. 
+# Paso 3: F-test sobre el coeficiente de Y_hat^2.
+keenan_manual <- function(x, m) {
+  x <- as.numeric(x)
+  n <- length(x)
+  # Matriz de rezagos
+  X <- embed(x, m + 1)
+  y  <- X[, 1]
+  Xr <- cbind(1, X[, -1, drop = FALSE])  # intercepto + rezagos
+  # Ajuste lineal AR(m)
+  b   <- qr.solve(Xr, y)
+  yhat <- as.numeric(Xr %*% b)
+  # Agregar yhat^2
+  Xa  <- cbind(Xr, yhat^2)
+  b2  <- qr.solve(Xa, y)
+  res <- y - as.numeric(Xa %*% b2)
+  SSR_r <- sum((y - yhat)^2)
+  SSR_u <- sum(res^2)
+  # F con gl (1, n-m-2)
+  Fs <- ((SSR_r - SSR_u) / 1) / (SSR_u / (length(y) - m - 2))
+  pval <- pf(Fs, 1, length(y) - m - 2, lower.tail = FALSE)
+  list(stat = Fs, p.value = pval)
+}
+
+# Tsay (1986): prueba de umbral basada en ordenar por una variable 
+# "threshold" y detectar cambio estructural. Implementamos versión 
+# simplificada: F-test sobre productos cruzados de rezagos.
+tsay_manual <- function(x, m) {
+  x <- as.numeric(x)
+  X  <- embed(x, m + 1)
+  y  <- X[, 1]
+  Xr <- cbind(1, X[, -1, drop = FALSE])
+  # Productos cruzados (todas las combinaciones)
+  lags <- X[, -1, drop = FALSE]
+  cross <- do.call(cbind, lapply(1:m, function(i) 
+    do.call(cbind, lapply(i:m, function(j) lags[, i] * lags[, j]))))
+  Xa <- cbind(Xr, cross)
+  SSR_r <- sum(lm.fit(Xr, y)$residuals^2)
+  SSR_u <- sum(lm.fit(Xa, y)$residuals^2)
+  q  <- ncol(cross)
+  df2 <- length(y) - ncol(Xa)
+  Fs  <- ((SSR_r - SSR_u) / q) / (SSR_u / df2)
+  pval <- pf(Fs, q, df2, lower.tail = FALSE)
+  list(stat = Fs, p.value = pval)
+}
+
+# Terasvirta LM (1994): test para transición suave (LSTAR/ESTAR).
+# Auxiliar regression con rezagos multiplicados por potencias de y_{t-d}.
+terasvirta_manual <- function(x, m, d = 1) {
+  x <- as.numeric(x)
+  X  <- embed(x, m + 1)
+  y  <- X[, 1]
+  lg <- X[, -1, drop = FALSE]
+  Xr <- cbind(1, lg)
+  yd <- lg[, d]
+  # Extensión de Terasvirta: productos con yd, yd^2, yd^3
+  ext <- cbind(lg * yd, lg * yd^2, lg * yd^3)
+  Xa  <- cbind(Xr, ext)
+  SSR_r <- sum(lm.fit(Xr, y)$residuals^2)
+  SSR_u <- sum(lm.fit(Xa, y)$residuals^2)
+  # LM = n * R^2, con R^2 del modelo extendido sobre residuos
+  n  <- length(y)
+  LM <- n * (SSR_r - SSR_u) / SSR_r
+  q  <- ncol(ext)
+  pval <- pchisq(LM, df = q, lower.tail = FALSE)
+  list(stat = LM, p.value = pval)
+}
+
+# --- Aplicar los tres tests a cada serie ---
+aplicar_tests <- function(x, nombre, m) {
+  k <- keenan_manual(x, m)
+  t <- tsay_manual(x, m)
+  s <- terasvirta_manual(x, m, d = 1)
+  tibble(
+    Variable          = nombre,
+    `Keenan F`        = round(k$stat, 3),   `p Keenan`   = round(k$p.value, 4),
+    `Tsay F`          = round(t$stat, 3),   `p Tsay`     = round(t$p.value, 4),
+    `Terasvirta LM`   = round(s$stat, 3),   `p Terasvirta` = round(s$p.value, 4)
+  )
+}
+
+tbl_nolineal_param <- bind_rows(
+  aplicar_tests(df$growth, "growth", ord["growth"]),
+  aplicar_tests(df$infl,   "infl",   ord["infl"]),
+  aplicar_tests(df$rate,   "rate",   ord["rate"])
+)
+
+# --- BDS sobre residuos del AR univariado ---
+run_bds <- function(x, nombre, m) {
+  res <- residuals(stats::arima(x, order = c(m, 0, 0)))
+  bd  <- try(tseries::bds.test(na.omit(res), m = 3), silent = TRUE)
+  if (inherits(bd, "try-error")) return(tibble(Variable = nombre, `BDS m=2` = NA, `BDS m=3` = NA))
+  tibble(
+    Variable   = nombre,
+    `BDS m=2`  = round(bd$p.value[1, 1], 4),
+    `BDS m=3`  = round(bd$p.value[2, 1], 4)
+  )
+}
+
+tbl_bds <- bind_rows(
+  run_bds(df$growth, "growth", ord["growth"]),
+  run_bds(df$infl,   "infl",   ord["infl"]),
+  run_bds(df$rate,   "rate",   ord["rate"])
+)
+
+# Consolidación
+tabla_nolineal <- left_join(tbl_nolineal_param, tbl_bds, by = "Variable")
+
+tabla_nolineal |>
+  kable(
+    caption  = "Tests de no linealidad sobre las series univariadas (p-valores)",
+    booktabs = TRUE
+  ) |>
+  kable_styling(latex_options = c("hold_position", "scale_down"))
+```
+
+**Interpretación:** p-valores por debajo de 0.05 implican **rechazo de linealidad**. 
+La evidencia conjunta —rechazo de normalidad en el VAR, efectos ARCH, y uno 
+o varios tests de no linealidad— justifica extender el análisis a SETAR, 
+LSTAR, TVAR y MS-VAR. La interpretación detallada de cada test se integra 
+en la discusión posterior de los modelos no lineales.
+
+---
+
+# Modelo lineal de referencia (VAR)
+
+El VAR(2) estimado en la sección de diagnósticos funciona ahora como el 
+**modelo de referencia** contra el cual se compararán los modelos no 
+lineales posteriores. A diferencia de la sección anterior (que se enfocó 
+en validarlo), aquí el énfasis está en su **interpretación económica** a 
+través de funciones impulso-respuesta (IRF), descomposición de la varianza 
+del error de pronóstico (FEVD) y tests de causalidad de Granger.
+
+## Especificación del VAR y nota de identificación
+
+```{r var-reestimar}
+# Reutilizamos var_candidato si existe, si no lo recalculamos
+if (!exists("var_candidato")) {
+  Y <- df |> select(growth, infl, rate) |> as.matrix()
+  var_candidato <- vars::VAR(Y, p = 2, type = "const")
+}
+
+# Resumen del VAR: coeficientes, R^2 y Ljung-Box univariante
+resumen_var <- summary(var_candidato)
+resumen_var$roots |> head()   # módulo de las raíces
+```
+
+**Nota sobre identificación.** Para construir funciones impulso-respuesta 
+ortogonalizadas se adopta la **descomposición de Cholesky con el orden 
+`growth → infl → rate`**, siguiendo la convención estándar de la literatura 
+de política monetaria (Sims, 1980; Bernanke y Blinder, 1992; 
+Christiano, Eichenbaum y Evans, 1999). Este orden supone que:
+
+1. El producto real (`growth`) no reacciona dentro del mismo trimestre a 
+   shocks nominales ni a shocks de política monetaria (rigideces reales).
+2. La inflación (`infl`) no reacciona contemporáneamente a shocks de 
+   política (rigideces nominales).
+3. La política monetaria (`rate`) sí puede responder contemporáneamente 
+   a movimientos del producto y de los precios, reflejando la regla de 
+   reacción del BCRD.
+
+Bajo este orden, el shock a `rate` se interpreta como un **shock de 
+política monetaria estructural** —precisamente el que interesa para 
+analizar el endurecimiento monetario 2021–2023.
+
+## Funciones impulso-respuesta (IRF)
+
+```{r var-irf, fig.cap="IRFs ortogonalizadas (Cholesky) con bandas bootstrap al 95%", fig.height=8}
+set.seed(2026)
+irf_var <- vars::irf(
+  var_candidato,
+  n.ahead = 12,
+  ortho   = TRUE,
+  boot    = TRUE,
+  runs    = 500,
+  ci      = 0.95
+)
+plot(irf_var)
+```
+
+```{r var-irf-acumuladas, fig.cap="IRFs acumuladas (efecto total a 12 trimestres)", fig.height=8}
+irf_acum <- vars::irf(
+  var_candidato,
+  n.ahead    = 12,
+  ortho      = TRUE,
+  cumulative = TRUE,
+  boot       = TRUE,
+  runs       = 500,
+  ci         = 0.95
+)
+plot(irf_acum)
+```
+
+**Interpretación de las IRFs.** La inspección visual debe centrarse en 
+tres relaciones clave:
+
+1. **Shock a `rate` → `infl`** (efecto contractivo de la política monetaria): 
+   la literatura predice un efecto negativo sobre la inflación tras 2–4 
+   trimestres. Si la banda de confianza cruza el cero, el efecto es débil 
+   o estadísticamente no significativo en promedio — síntoma de que el 
+   modelo lineal no captura bien la transmisión.
+2. **Shock a `rate` → `growth`** (costo real del endurecimiento): debe 
+   ser negativo en el corto plazo y desvanecerse.
+3. **Shock a `infl` → `rate`** (respuesta del BCRD): positivo, confirmando 
+   que el banco central reacciona al alza de precios.
+
+La asimetría de las respuestas no puede detectarse con un VAR lineal: 
+por construcción, un shock de +1 y uno de −1 producen IRFs simétricas y 
+proporcionales. Esta es precisamente la limitación que los modelos 
+SETAR/LSTAR/TVAR/MS buscan superar.
+
+## Descomposición de la varianza del error de pronóstico (FEVD)
+
+La FEVD descompone la varianza del error de pronóstico de cada variable 
+a distintos horizontes según la fuente del shock. Responde a la pregunta: 
+*¿qué fracción de la variabilidad no anticipada de la inflación a 8 
+trimestres se explica por shocks de política monetaria?*
+
+```{r var-fevd, fig.cap="FEVD del VAR(2): participación de cada shock en la varianza del error", fig.height=7}
+fevd_var <- vars::fevd(var_candidato, n.ahead = 12)
+plot(fevd_var)
+```
+
+```{r var-fevd-tabla}
+# Tabla compacta de FEVD a horizontes 1, 4, 8 y 12
+horizontes <- c(1, 4, 8, 12)
+
+tabla_fevd <- lapply(names(fevd_var), function(v) {
+  mat <- fevd_var[[v]][horizontes, , drop = FALSE]
+  tibble(
+    Variable       = v,
+    Horizonte      = horizontes,
+    `Shock growth` = round(mat[, "growth"] * 100, 2),
+    `Shock infl`   = round(mat[, "infl"]   * 100, 2),
+    `Shock rate`   = round(mat[, "rate"]   * 100, 2)
+  )
+}) |> bind_rows()
+
+tabla_fevd |>
+  kable(
+    caption  = "FEVD: aporte porcentual de cada shock a la varianza del error (%)",
+    booktabs = TRUE
+  ) |>
+  kable_styling(latex_options = c("hold_position"))
+```
+
+**Interpretación de la FEVD.** Los porcentajes a horizontes largos 
+(8–12 trimestres) son más informativos que los de corto plazo, porque 
+a corto plazo la varianza de cada variable está dominada por su propio 
+shock (por la ortogonalización Cholesky). Para el **caso de estudio del 
+shock inflacionario 2021–2023** es clave identificar:
+
+- Qué fracción de la varianza de `infl` se explica por shocks propios 
+  (componente idiosincrático / shocks externos) vs. por `rate` 
+  (respuesta del BCRD).
+- Si `rate` explica una fracción baja de la varianza de `infl`, la 
+  interpretación es que el control de inflación vía política monetaria 
+  es **limitado en economía abierta pequeña como RD**, consistente con 
+  la literatura sobre el canal de pass-through cambiario.
+
+## Causalidad de Granger
+
+```{r var-granger}
+# Tests de causalidad de Granger por pares
+gr_growth <- vars::causality(var_candidato, cause = "growth")
+gr_infl   <- vars::causality(var_candidato, cause = "infl")
+gr_rate   <- vars::causality(var_candidato, cause = "rate")
+
+tabla_granger <- tribble(
+  ~`Variable causal`, ~`Estadístico F`,                              ~`p-valor`,                              ~`Efecto instantáneo (p)`,
+  "growth",           round(gr_growth$Granger$statistic, 3),         round(gr_growth$Granger$p.value, 4),     round(gr_growth$Instant$p.value, 4),
+  "infl",             round(gr_infl$Granger$statistic,   3),         round(gr_infl$Granger$p.value,   4),     round(gr_infl$Instant$p.value,   4),
+  "rate",             round(gr_rate$Granger$statistic,   3),         round(gr_rate$Granger$p.value,   4),     round(gr_rate$Instant$p.value,   4)
+)
+
+tabla_granger |>
+  kable(
+    caption  = "Tests de causalidad de Granger: ¿la variable X Granger-causa al resto del sistema?",
+    booktabs = TRUE
+  ) |>
+  kable_styling(latex_options = c("hold_position"))
+```
+
+**Interpretación de Granger.** Un p-valor bajo en la columna "Granger" 
+significa que los rezagos de la variable causal ayudan a predecir el 
+resto del sistema más allá de los rezagos propios. La causalidad 
+instantánea se refiere a correlaciones contemporáneas en los residuos 
+(no es una relación causal en sentido estricto). Los resultados 
+esperables para una economía con política monetaria activa son: 
+(i) `rate` Granger-causa al sistema (el BCRD tiene poder predictivo 
+sobre actividad y precios); (ii) `infl` y `growth` también contribuyen, 
+reflejando la retroalimentación de los datos macroeconómicos en la 
+regla de Taylor implícita.
+
+## Limitaciones del VAR lineal
+
+Los resultados de la Parte 2 (rechazo de normalidad con Jarque-Bera, 
+efectos ARCH significativos, y rechazo de linealidad por BDS en `growth` 
+e `infl`) documentan que el VAR lineal **no es el proceso generador de 
+datos verdadero**. Específicamente:
+
+1. **Simetría forzada**: las IRFs del VAR lineal son simétricas por 
+   construcción — un shock de +1 desviación estándar y uno de −1 
+   producen trayectorias idénticas en signo opuesto. Pero la evidencia 
+   macroeconómica dominicana (shock COVID, endurecimiento 2022) sugiere 
+   que los shocks de política tienen efectos **más fuertes en régimen 
+   de alta inflación** que en régimen de estabilidad.
+2. **Linealidad en la transmisión**: el efecto de un alza de 100 bps 
+   de TPM se asume igual en 2010 (TPM al 5%) que en 2022 (TPM al 8.5%). 
+   Económicamente, esta simetría es poco defendible — el costo financiero 
+   y el canal expectacional cambian con el nivel.
+3. **Invariabilidad en el tiempo**: el VAR asume parámetros constantes 
+   a lo largo de 2007–2024, pero este período incluye al menos tres 
+   regímenes distintos: pre-crisis (2007–2008), post-crisis 
+   (2009–2019) y post-COVID (2020–2024).
+
+Estas limitaciones justifican el análisis no lineal de las secciones 
+siguientes (SETAR, LSTAR, TVAR y MS), cada uno relajando uno o varios 
+de estos supuestos.
+
+---
+
+# Modelo SETAR
+
+El modelo **Self-Exciting Threshold Autoregressive (SETAR)** permite que 
+los parámetros del AR cambien según el valor pasado de la propia serie 
+cruce un umbral. Siguiendo los resultados de la Parte 2, aplicamos SETAR 
+a la serie de crecimiento (`growth`), donde los tests univariados rechazan 
+linealidad con p < 0.001.
+
+## Especificación y estimación
+
+```{r setar}
+mod_setar <- tsDyn::setar(
+  df$growth, 
+  m        = 2,      # número de rezagos
+  thDelay  = 1       # rezago de la variable umbral
+)
+
+summary(mod_setar)
+```
+
+```{r setar-umbral}
+# Extraer el umbral de forma robusta ante cambios de API en tsDyn.
+# Probamos varias rutas que han existido en distintas versiones.
+thr_setar <- tryCatch(tsDyn::getTh(mod_setar), error = function(e) NA_real_)
+
+if (is.na(thr_setar) || is.null(thr_setar)) {
+  thr_setar <- tryCatch(mod_setar$model.specific$th, error = function(e) NA_real_)
+}
+if (is.na(thr_setar) || is.null(thr_setar)) {
+  coefs_all <- coef(mod_setar)
+  thr_setar <- coefs_all[grep("th", names(coefs_all), ignore.case = TRUE)][1]
+}
+# Último recurso: extraer del texto del summary
+if (is.na(thr_setar) || is.null(thr_setar)) {
+  s <- capture.output(summary(mod_setar))
+  line <- grep("^Value", s, value = TRUE)
+  thr_setar <- as.numeric(sub(".*Value\\s*:\\s*", "", line))
+}
+thr_setar <- as.numeric(thr_setar)
+
+cat("Umbral estimado:", round(thr_setar, 4), "\n")
+
+# Identificar observaciones por régimen (la variable umbral es growth_{t-1})
+regimen <- ifelse(dplyr::lag(df$growth, 1) <= thr_setar, "Bajo", "Alto")
+tabla_reg <- table(regimen, useNA = "no")
+cat("Distribución de observaciones por régimen:\n")
+print(tabla_reg)
+cat("\nPorcentajes:",
+    round(prop.table(tabla_reg) * 100, 1), "%\n")
+```
+
+```{r setar-plot, fig.cap="Serie growth con régimen SETAR identificado (puntos)", fig.height=4.5}
+# Visualización con color por régimen
+df_setar <- df |>
+  mutate(
+    reg_setar = factor(ifelse(dplyr::lag(growth, 1) <= thr_setar, 
+                              "Régimen bajo", "Régimen alto"))
+  ) |>
+  filter(!is.na(reg_setar))
+
+ggplot(df_setar, aes(x = date, y = growth)) +
+  geom_line(color = "grey60", linewidth = 0.5) +
+  geom_point(aes(color = reg_setar), size = 2, alpha = 0.85) +
+  geom_hline(yintercept = thr_setar, linetype = "dashed", color = "firebrick") +
+  scale_color_manual(values = c("Régimen bajo" = "#d95f02", "Régimen alto" = "#1b9e77")) +
+  labs(
+    x = NULL, y = "Crecimiento trimestral (%)",
+    title = "SETAR: identificación de regímenes sobre growth",
+    subtitle = paste0("Umbral ≈ ", round(thr_setar, 2), "% (línea roja)"),
+    color = NULL,
+    caption = "Fuente: BCRD. Elaboración propia."
+  )
+```
+
+**Interpretación.** El modelo SETAR divide la dinámica del crecimiento 
+en dos regímenes según el valor del crecimiento rezagado. Los coeficientes 
+autorregresivos difieren entre regímenes, lo que implica que la **persistencia 
+y el patrón de reversión a la media del PIB dominicano no son constantes**: 
+cuando la economía viene de una contracción (régimen bajo), el ajuste hacia 
+la tendencia sigue una dinámica distinta de cuando viene de una expansión. 
+La composición del régimen bajo captura eventos como la crisis financiera 
+global y el shock COVID-19, mientras el régimen alto representa el 
+comportamiento de crecimiento en condiciones normales.
+
+---
+
+# Modelo LSTAR
+
+El modelo **Logistic Smooth Transition Autoregressive (LSTAR)** relaja la 
+discontinuidad de SETAR mediante una transición logística suave entre dos 
+regímenes. Siguiendo la estructura del enunciado, lo estimamos sobre la 
+inflación (`infl`).
+
+## Especificación y estimación
+
+```{r lstar}
+mod_lstar <- tsDyn::lstar(
+  df$infl, 
+  m = 2,     # rezagos
+  d = 1      # rezago de la variable de transición
+)
+summary(mod_lstar)
+```
+
+```{r lstar-graficos, fig.cap="LSTAR: función de transición logística estimada", fig.height=4}
+# Extraer parámetros gamma (suavidad) y c (umbral) de forma robusta
+coefs_lstar <- coef(mod_lstar)
+gamma_est <- as.numeric(coefs_lstar[grep("^gamma$|gamma", names(coefs_lstar), ignore.case = TRUE)][1])
+th_est    <- as.numeric(coefs_lstar[grep("^th$|^c$", names(coefs_lstar))][1])
+
+# Fallback: extraer del texto del summary si lo anterior falló
+if (is.na(gamma_est) || is.na(th_est)) {
+  s <- capture.output(summary(mod_lstar))
+  # Buscar gamma
+  gline <- grep("^gamma", s, value = TRUE, ignore.case = FALSE)
+  if (length(gline) > 0 && is.na(gamma_est)) {
+    gamma_est <- as.numeric(strsplit(trimws(gline[1]), "\\s+")[[1]][2])
+  }
+  # Buscar th
+  tline <- grep("^th", s, value = TRUE, ignore.case = FALSE)
+  if (length(tline) > 0 && is.na(th_est)) {
+    th_est <- as.numeric(strsplit(trimws(tline[1]), "\\s+")[[1]][2])
+  }
+}
+
+cat("LSTAR estimado — gamma:", round(gamma_est, 3), 
+    "  |  umbral c:", round(th_est, 3), "\n")
+
+# Función de transición G(z) = 1 / (1 + exp(-gamma * (z - c)))
+z_seq <- seq(min(df$infl, na.rm = TRUE), max(df$infl, na.rm = TRUE), length.out = 200)
+G_seq <- 1 / (1 + exp(-gamma_est * (z_seq - th_est)))
+
+data.frame(z = z_seq, G = G_seq) |>
+  ggplot(aes(x = z, y = G)) +
+  geom_line(color = "steelblue4", linewidth = 1) +
+  geom_vline(xintercept = th_est, linetype = "dashed", color = "firebrick") +
+  annotate("text", x = th_est, y = 0.05, 
+           label = paste0("c = ", round(th_est, 2)), 
+           color = "firebrick", hjust = -0.1) +
+  labs(
+    x = expression(z[t] ~ "=" ~ infl[t-1]),
+    y = "G(z) — probabilidad de régimen alto",
+    title = "Función de transición logística LSTAR sobre infl",
+    subtitle = paste0("γ = ", round(gamma_est, 2), " — mayor γ ⇒ transición más abrupta")
+  )
+```
+
+**Interpretación.** El parámetro $\gamma$ (suavidad de la transición) 
+determina qué tan abrupto es el paso entre regímenes: un $\gamma$ grande 
+aproxima al SETAR (cambio casi discontinuo), mientras un $\gamma$ pequeño 
+implica una transición gradual. El umbral $c$ (parámetro `th`) marca el 
+punto donde la probabilidad de estar en el régimen alto es exactamente 0.5. 
+
+**Consistencia con la Parte 2.** Los tests univariados aplicados a `infl` 
+(Keenan, Tsay, Terasvirta) no rechazaron linealidad al 5%, lo que 
+sugiere que la especificación LSTAR sobre inflación es **débilmente 
+identificada**. Esto es coherente con el test interno de LSTAR vs AR que 
+reporta la salida del modelo. En términos económicos, la inflación 
+dominicana podría estar mejor modelada por un **cambio de régimen discreto** 
+(Markov-Switching) que por una transición suave sobre su propio rezago.
+
+---
+
+# Modelo TVAR
+
+El **Threshold VAR (TVAR)** extiende la lógica de SETAR al caso multivariado. 
+Los parámetros del VAR cambian cuando una variable umbral (típicamente una 
+combinación lineal de las endógenas o una exógena) cruza un nivel crítico.
+
+## Especificación y estimación
+
+```{r tvar}
+Y_tvar <- df |> select(growth, infl) |> as.matrix()
+
+mod_tvar <- tsDyn::TVAR(
+  Y_tvar, 
+  lag     = 2, 
+  nthresh = 1,
+  plot    = FALSE,
+  trace   = FALSE
+)
+summary(mod_tvar)
+```
+
+```{r tvar-umbral}
+# Extraer umbral TVAR de forma robusta
+thr_tvar <- tryCatch(tsDyn::getTh(mod_tvar), error = function(e) NA_real_)
+
+if (is.na(thr_tvar) || is.null(thr_tvar)) {
+  thr_tvar <- tryCatch(mod_tvar$model.specific$Thresh, error = function(e) NA_real_)
+}
+if (is.na(thr_tvar) || is.null(thr_tvar)) {
+  # Último recurso: parsear el summary
+  s <- capture.output(summary(mod_tvar))
+  line <- grep("Threshold value|threshold\\s*:", s, value = TRUE, ignore.case = TRUE)
+  if (length(line) > 0) {
+    thr_tvar <- as.numeric(gsub("[^0-9.\\-]", "", sub(".*:", "", line[1])))
+  }
+}
+thr_tvar <- as.numeric(thr_tvar)
+
+cat("Umbral TVAR estimado:", round(thr_tvar, 4), "\n")
+```
+
+**Interpretación.** El umbral óptimo detectado por TVAR separa los trimestres 
+en dos regímenes claramente distintos. Los coeficientes de los rezagos 
+difieren sustancialmente entre regímenes — especialmente los asociados a 
+`growth`, lo que implica que el impacto de choques macroeconómicos pasados 
+sobre la dinámica presente depende del estado del ciclo. El régimen minoritario 
+captura episodios de crisis o shocks severos (2008–2009, 2020), mientras que 
+el régimen mayoritario refleja el comportamiento económico normal.
+
+## IRF manual en TVAR
+
+Las IRFs del TVAR deben calcularse **condicionales al régimen inicial**, 
+ya que la respuesta del sistema ante un shock depende del estado en que 
+ocurra. A diferencia del VAR lineal (donde la IRF es única e invariante 
+en el tiempo), el TVAR genera **IRFs específicas de cada régimen**.
+
+El procedimiento implementado sigue los pasos de Koop, Pesaran y Potter 
+(1996) para **Generalized IRFs** en modelos no lineales:
+
+1. Partir de un estado inicial $y_0$ representativo del régimen.
+2. Simular la trayectoria base sin shock adicional.
+3. Inyectar un shock en $t = 0$ a la variable de interés.
+4. Simular la trayectoria con shock.
+5. La IRF es la diferencia promedio entre ambas trayectorias.
+
+```{r irf-tvar-manual, fig.cap="IRFs del TVAR por régimen: respuesta de growth e infl a un shock", fig.height=6}
+set.seed(2026)
+
+# --- Extracción robusta de las matrices de coeficientes del TVAR ---
+# En distintas versiones de tsDyn las matrices por régimen aparecen como
+# $coefficients$Bdown/Bup, $coeffmat, o vía coef() con prefijos "L"/"H".
+get_B_tvar <- function(model) {
+  cf <- model$coefficients
+  # Caso 1: lista con Bdown/Bup
+  if (is.list(cf) && all(c("Bdown", "Bup") %in% names(cf))) {
+    return(list(low = cf$Bdown, high = cf$Bup))
+  }
+  # Caso 2: lista con nombres tipo "Bdown"/"Bup" en lowercase
+  if (is.list(cf)) {
+    nm <- names(cf)
+    lo <- cf[[grep("down|low|L$|_L", nm, ignore.case = TRUE)[1]]]
+    hi <- cf[[grep("up|high|H$|_H", nm, ignore.case = TRUE)[1]]]
+    if (!is.null(lo) && !is.null(hi)) return(list(low = lo, high = hi))
+  }
+  # Caso 3: matriz única con columnas separadas por régimen
+  if (is.matrix(cf) || is.data.frame(cf)) {
+    cols <- colnames(cf)
+    lo_cols <- grep("L\\b|_L|down|low", cols, ignore.case = TRUE)
+    hi_cols <- grep("H\\b|_H|up|high", cols, ignore.case = TRUE)
+    if (length(lo_cols) > 0 && length(hi_cols) > 0) {
+      return(list(low = as.matrix(cf[, lo_cols]), high = as.matrix(cf[, hi_cols])))
+    }
+  }
+  stop("No se pudieron extraer las matrices de coeficientes del TVAR. Revisa str(mod_tvar$coefficients).")
+}
+
+B_list <- tryCatch(get_B_tvar(mod_tvar), error = function(e) NULL)
+
+if (is.null(B_list)) {
+  cat("⚠️ No se pudieron extraer las matrices B del TVAR automáticamente.\n")
+  cat("La IRF manual se omite. Ver estructura con: str(mod_tvar$coefficients)\n")
+  # Gráfico placeholder para que el chunk no falle
+  ggplot() + 
+    annotate("text", x = 1, y = 1, label = "IRF TVAR no disponible\n(ver consola)") +
+    theme_void() -> p_placeholder
+  print(p_placeholder)
+} else {
+
+irf_tvar_manual <- function(y0, shock_var, shock_size, h = 12, n_sim = 500) {
+  B_low  <- B_list$low
+  B_high <- B_list$high
+  sigma  <- cov(residuals(mod_tvar))
+  K      <- ncol(y0)
+  p      <- nrow(y0)
+  
+  step_tvar <- function(Y_hist, eps) {
+    z <- Y_hist[1, 1]
+    B <- if (z <= thr_tvar) B_low else B_high
+    reg <- c(1, as.vector(t(Y_hist)))
+    y_new <- as.numeric(B %*% reg) + eps
+    y_new
+  }
+  
+  irf_accum <- matrix(0, h + 1, K)
+  for (s in 1:n_sim) {
+    Yb <- y0
+    traj_base <- matrix(NA, h + 1, K); traj_base[1, ] <- Yb[1, ]
+    for (t in 1:h) {
+      eps <- MASS::mvrnorm(1, mu = rep(0, K), Sigma = sigma)
+      y_new <- step_tvar(Yb, eps)
+      Yb <- rbind(y_new, Yb[-p, , drop = FALSE])
+      traj_base[t + 1, ] <- y_new
+    }
+    Ys <- y0
+    traj_shock <- matrix(NA, h + 1, K); traj_shock[1, ] <- Ys[1, ]
+    eps0 <- rep(0, K); eps0[shock_var] <- shock_size * sqrt(sigma[shock_var, shock_var])
+    for (t in 1:h) {
+      eps <- MASS::mvrnorm(1, mu = rep(0, K), Sigma = sigma)
+      if (t == 1) eps <- eps + eps0
+      y_new <- step_tvar(Ys, eps)
+      Ys <- rbind(y_new, Ys[-p, , drop = FALSE])
+      traj_shock[t + 1, ] <- y_new
+    }
+    irf_accum <- irf_accum + (traj_shock - traj_base)
+  }
+  irf_accum / n_sim
+}
+
+# Estados iniciales representativos de cada régimen
+lag_growth <- Y_tvar[-nrow(Y_tvar), 1]
+idx_bajo   <- lag_growth <= thr_tvar
+idx_alto   <- !idx_bajo
+
+y0_bajo <- rbind(
+  colMeans(Y_tvar[which(idx_bajo), , drop = FALSE], na.rm = TRUE),
+  colMeans(Y_tvar[which(idx_bajo), , drop = FALSE], na.rm = TRUE)
+)
+
+y0_alto <- rbind(
+  colMeans(Y_tvar[which(idx_alto), , drop = FALSE], na.rm = TRUE),
+  colMeans(Y_tvar[which(idx_alto), , drop = FALSE], na.rm = TRUE)
+)
+
+# IRF: shock de +1 desv. est. a infl (variable 2)
+irf_alto <- irf_tvar_manual(y0_alto, shock_var = 2, shock_size = 1, h = 12)
+irf_bajo <- irf_tvar_manual(y0_bajo, shock_var = 2, shock_size = 1, h = 12)
+
+irf_tvar_df <- bind_rows(
+  as.data.frame(irf_alto) |>
+    setNames(c("growth", "infl")) |>
+    mutate(h = 0:12, Regimen = "Alto"),
+  as.data.frame(irf_bajo) |>
+    setNames(c("growth", "infl")) |>
+    mutate(h = 0:12, Regimen = "Bajo")
+) |>
+  pivot_longer(c(growth, infl), names_to = "Variable", values_to = "Respuesta")
+
+ggplot(irf_tvar_df, aes(x = h, y = Respuesta, color = Regimen)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 1.5) +
+  facet_wrap(~ Variable, scales = "free_y", ncol = 2) +
+  scale_color_manual(values = c("Alto" = "#1b9e77", "Bajo" = "#d95f02")) +
+  labs(
+    x = "Horizonte (trimestres)", y = "Respuesta",
+    title = "IRFs del TVAR por régimen inicial",
+    subtitle = "Shock de +1 desv. est. a infl",
+    color = "Régimen inicial"
+  )
+
+}  # cierra el else
+```
+
+**Interpretación de las IRFs TVAR.** Las respuestas al mismo shock 
+difieren **en magnitud y persistencia** según el régimen inicial. Esta es 
+la diferencia fundamental frente al VAR lineal: un shock inflacionario 
+ocurrido en tiempos de crisis (régimen bajo) se propaga de manera distinta 
+a uno ocurrido en tiempos normales (régimen alto). Para el caso 
+dominicano, esto implica que el **impacto del shock inflacionario 
+2021–2023 sobre el crecimiento** dependió del estado de la economía al 
+momento del shock — no es un efecto "promedio" como el que predice el VAR.
+
+---
+
+# Modelo Markov-Switching
+
+El modelo **Markov-Switching (MS)** de Hamilton (1989) permite que los 
+parámetros cambien entre regímenes no observables cuya evolución sigue 
+una **cadena de Markov**. A diferencia de SETAR/LSTAR/TVAR, aquí **no se 
+especifica la variable umbral**: el régimen es **latente** y se infiere 
+probabilísticamente de los datos.
+
+Siguiendo los resultados de la Parte 2 (donde BDS rechazaba linealidad 
+para `infl` pero los tests paramétricos no), este modelo es especialmente 
+adecuado para la inflación dominicana.
+
+## Especificación y estimación
+
+```{r ms}
+# Construcción de data frame con rezagos (requerido por MSwM)
+df_ms <- df |>
+  mutate(
+    growth_l1 = dplyr::lag(growth, 1),
+    infl_l1   = dplyr::lag(infl,   1)
+  ) |>
+  filter(!is.na(growth_l1), !is.na(infl_l1))
+
+# Modelos auxiliares lineales (semilla para msmFit)
+mod1 <- lm(growth ~ growth_l1 + infl_l1, data = df_ms)
+mod2 <- lm(infl   ~ growth_l1 + infl_l1, data = df_ms)
+
+# Ajuste Markov-Switching con 2 regímenes, varianza y parámetros cambiantes
+ms1 <- MSwM::msmFit(mod1, k = 2, p = 0, sw = rep(TRUE, 4))
+ms2 <- MSwM::msmFit(mod2, k = 2, p = 0, sw = rep(TRUE, 4))
+
+summary(ms1)
+```
+
+```{r ms-infl}
+summary(ms2)
+```
+
+## Probabilidades filtradas
+
+```{r ms-prob, fig.cap="Probabilidades filtradas de estar en el régimen 2 (alto)", fig.height=5}
+prob_ms1 <- ms1@Fit@filtProb[, 2]
+prob_ms2 <- ms2@Fit@filtProb[, 2]
+
+df_prob <- df_ms |>
+  mutate(
+    p_growth = prob_ms1,
+    p_infl   = prob_ms2
+  ) |>
+  select(date, p_growth, p_infl) |>
+  pivot_longer(-date, names_to = "Serie", values_to = "Prob") |>
+  mutate(Serie = recode(Serie,
+    p_growth = "Prob. régimen alto (growth)",
+    p_infl   = "Prob. régimen alto (infl)"
+  ))
+
+ggplot(df_prob, aes(x = date, y = Prob)) +
+  geom_area(fill = "steelblue3", alpha = 0.4) +
+  geom_line(color = "steelblue4", linewidth = 0.6) +
+  geom_hline(yintercept = 0.5, linetype = "dashed", color = "grey40") +
+  facet_wrap(~ Serie, ncol = 1) +
+  labs(
+    x = NULL, y = "Probabilidad",
+    title = "Probabilidades filtradas de estar en régimen alto",
+    subtitle = "Valores > 0.5 indican régimen dominante alto en ese trimestre"
+  )
+```
+
+**Interpretación.** Las probabilidades filtradas identifican períodos de 
+alta y baja inflación/crecimiento sin imponer umbrales observables. Los 
+períodos con probabilidad alta (> 0.5) de régimen 2 corresponden 
+típicamente a episodios de **shock externo** (2008 alimentos, 2020 COVID, 
+2021–2023 post-pandemia), mientras las zonas de probabilidad baja reflejan 
+el régimen estable. La **matriz de transición** reportada en el summary 
+indica la persistencia de cada régimen: probabilidades diagonales cercanas 
+a 1 indican regímenes muy persistentes (pocos cambios), mientras valores 
+más bajos implican transiciones frecuentes.
+
+## IRFs condicionales en Markov-Switching
+
+Las IRFs en MS requieren especificar desde qué régimen parte el shock. 
+Se construyen **dos IRFs separadas**: una iniciando en el régimen 1 y 
+otra iniciando en el régimen 2. La comparación revela cómo la transmisión 
+de shocks depende del estado latente.
+
+```{r ms-irf, fig.cap="IRFs condicionales al régimen: respuesta de infl a shock en growth", fig.height=4.5}
+# Extracción robusta de coeficientes por régimen del modelo MS.
+# En MSwM, los coeficientes por régimen están en el slot @Coef (matriz k x p).
+coef_ms <- tryCatch(ms2@Coef, error = function(e) NULL)
+if (is.null(coef_ms)) coef_ms <- tryCatch(ms2@coefficients, error = function(e) NULL)
+
+if (is.null(coef_ms) || !is.matrix(coef_ms) || nrow(coef_ms) < 2) {
+  cat("⚠️ No se pudieron extraer los coeficientes del MS automáticamente.\n")
+  ggplot() + annotate("text", x = 1, y = 1, 
+                     label = "IRF MS no disponible") + theme_void()
+} else {
+
+# La matriz tiene columnas en el orden: Intercept, growth_l1, infl_l1
+# Nota: verificar con colnames(coef_ms) si el orden fuera distinto
+irf_ms <- function(coef_reg, h = 12, shock = 1) {
+  # coef_reg: vector c(Intercept, a_growth, a_infl)
+  resp <- numeric(h + 1)
+  resp[1] <- 0
+  resp[2] <- coef_reg[2] * shock
+  for (t in 3:(h + 1)) {
+    resp[t] <- coef_reg[3] * resp[t - 1]
+  }
+  resp
+}
+
+irf_r1 <- irf_ms(coef_ms[1, ], h = 12, shock = 1)
+irf_r2 <- irf_ms(coef_ms[2, ], h = 12, shock = 1)
+
+df_irf_ms <- data.frame(
+  h = rep(0:12, 2),
+  Respuesta = c(irf_r1, irf_r2),
+  Regimen = rep(c("Régimen 1", "Régimen 2"), each = 13)
+)
+
+ggplot(df_irf_ms, aes(x = h, y = Respuesta, color = Regimen)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 1.5) +
+  scale_color_manual(values = c("Régimen 1" = "#d95f02", "Régimen 2" = "#1b9e77")) +
+  labs(
+    x = "Horizonte (trimestres)", y = "Respuesta de infl",
+    title = "IRFs MS: respuesta de inflación a shock +1 en growth",
+    subtitle = "Condicionales al régimen inicial",
+    color = NULL
+  )
+
+}  # cierra el else
+```
+
+**Interpretación.** Las IRFs condicionales del MS son la evidencia más 
+directa de que la **transmisión de shocks es régimen-dependiente**. Si la 
+respuesta en el régimen 2 es sistemáticamente mayor que en el régimen 1, 
+el modelo está capturando que la inflación responde más agresivamente a 
+presiones del ciclo real cuando la economía está en régimen de alta 
+volatilidad. Este hallazgo es central para la política monetaria: la 
+eficacia del BCRD para contener la inflación depende no solo del tamaño 
+del shock sino del régimen vigente.
+
+---
+
+# Caso de estudio: Shock inflacionario 2021–2023
+
+## Contexto económico
+
+El shock inflacionario 2021–2023 en República Dominicana combinó factores 
+externos (alza de precios internacionales de alimentos y combustibles 
+tras la pandemia y la guerra en Ucrania) con respuestas de política 
+monetaria agresivas: la TPM pasó de 3.00% en noviembre 2021 a 8.50% en 
+noviembre 2022, alcanzando su nivel más alto desde la crisis de 2003–2004. 
+La inflación general superó el 9% interanual en abril 2022, muy por encima 
+del rango meta (4% ± 1%).
+
+Este episodio es un laboratorio natural para comparar modelos lineales vs. 
+no lineales, porque (i) hay un **shock identificable**, (ii) ocurrió en un 
+régimen económico distinto al promedio de la muestra, y (iii) la respuesta 
+del BCRD fue **desproporcionadamente fuerte** respecto a lo que un VAR 
+lineal hubiera sugerido.
+
+## Comparación de modelos
+
+```{r comparacion-modelos}
+# Ventana del shock
+ventana_shock <- df |> 
+  filter(date >= as.Date("2021-01-01") & date <= as.Date("2023-12-31"))
+
+# Estadísticas descriptivas del período
+resumen_shock <- ventana_shock |>
+  summarise(
+    n           = n(),
+    growth_med  = mean(growth),
+    growth_sd   = sd(growth),
+    infl_med    = mean(infl),
+    infl_max    = max(infl),
+    rate_med    = mean(rate),
+    rate_max    = max(rate),
+    delta_rate  = max(rate) - min(rate)
+  )
+
+resumen_shock |>
+  kable(
+    caption  = "Estadísticas del shock inflacionario 2021–2023 en RD",
+    booktabs = TRUE,
+    digits   = 3
+  ) |>
+  kable_styling(latex_options = c("hold_position", "scale_down"))
+```
+
+```{r comparacion-shock, fig.cap="Evolución de las 3 variables durante el shock 2021–2023 (ventana destacada)", fig.height=6}
+df_long |>
+  ggplot(aes(x = date, y = valor)) +
+  annotate("rect", 
+           xmin = as.Date("2021-01-01"), xmax = as.Date("2023-12-31"),
+           ymin = -Inf, ymax = Inf, 
+           alpha = 0.15, fill = "firebrick") +
+  geom_line(color = "steelblue4", linewidth = 0.6) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+  facet_wrap(~ variable, scales = "free_y", ncol = 1) +
+  labs(
+    x = NULL, y = NULL,
+    title = "Shock inflacionario 2021–2023 (sombreado)",
+    caption = "Fuente: BCRD. Elaboración propia."
+  )
+```
+
+## Síntesis comparativa
+
+```{r sintesis-modelos}
+sintesis <- tribble(
+  ~Modelo,      ~`Supuesto clave`,                                    ~`Captura asimetrías`,  ~`Captura cambio de régimen`, ~`Adecuado para shock 2021-23`,
+  "VAR(2)",     "Parámetros constantes, IRFs simétricas",             "No",                   "No",                          "Solo como referencia",
+  "SETAR",      "Umbral observable sobre rezago propio",              "Sí (umbral duro)",     "Sí (discreto)",               "Parcialmente (univariado)",
+  "LSTAR",      "Transición suave sobre rezago",                      "Sí (suave)",           "Sí (suave)",                  "Débil (tests no rechazan)",
+  "TVAR",       "Umbral observable multivariado",                     "Sí",                   "Sí (discreto)",               "Sí — 2 regímenes claros",
+  "MS-VAR",     "Régimen latente tipo Markov",                        "Sí",                   "Sí (probabilístico)",         "Sí — régimen identificable"
+)
+
+sintesis |>
+  kable(
+    caption  = "Comparación de modelos aplicados al caso dominicano",
+    booktabs = TRUE
+  ) |>
+  kable_styling(latex_options = c("hold_position", "scale_down")) 
+```
+
+## Narrativa económica
+
+La comparación de los cinco modelos sobre el episodio 2021–2023 entrega 
+tres lecciones para el análisis de política monetaria en República 
+Dominicana:
+
+1. **El VAR lineal subestima la respuesta del BCRD.** Al imponer 
+   simetría, las IRFs lineales implican que un shock de 1 d.e. en 
+   inflación genera una respuesta proporcional en la TPM en todos los 
+   períodos. Pero los datos muestran que la respuesta 2021–2023 fue 
+   **más rápida y agresiva** de lo que el VAR predice — síntoma de que el 
+   BCRD actúa bajo una **regla de Taylor no lineal** (más fuerte cuando 
+   la inflación se aleja significativamente de la meta).
+
+2. **Los modelos no lineales (TVAR y MS) identifican el régimen de crisis 
+   como cualitativamente distinto.** El TVAR asigna el trimestre 
+   2020-Q2 (COVID) y parte de 2022 a un régimen propio con dinámicas de 
+   persistencia mayores. El MS confirma este patrón vía probabilidades 
+   filtradas, sin necesidad de especificar un umbral observable.
+
+3. **La transmisión del shock a `growth` es régimen-dependiente.** Las 
+   IRFs por régimen del TVAR muestran que una subida de TPM en régimen 
+   bajo (crisis) tiene efectos contractivos más intensos y persistentes 
+   que en régimen alto (normal). Esta asimetría tiene implicaciones 
+   prácticas: el costo real de desinflar es mayor en el margen inferior 
+   del ciclo.
+
+En conjunto, el análisis confirma que **el marco lineal es insuficiente** 
+para describir la macroeconomía dominicana reciente, y que los modelos no 
+lineales aportan información cualitativamente nueva para el diseño de 
+política monetaria.
+
+---
+
+# Conclusiones
+
+Este trabajo estimó y comparó cinco especificaciones de modelos dinámicos 
+sobre las variables macro de República Dominicana (2007-Q2 a 2024-Q3):
+
+1. La **Parte 2** documentó evidencia sólida de no linealidad: BDS rechaza 
+   linealidad para `growth` (p < 0.001) e `infl` (p < 0.001), y Terasvirta 
+   LM rechaza para `rate` (p = 0.043). La normalidad (Jarque-Bera) y la 
+   homocedasticidad (ARCH) del VAR lineal son rechazadas fuertemente, lo 
+   que invalida su uso como modelo de referencia más allá de lo descriptivo.
+
+2. Los modelos de **umbral** (SETAR, TVAR) identifican un **régimen de 
+   crisis** que cubre aproximadamente el 10% de la muestra, correspondiente 
+   a los episodios 2008–2009 y 2020 (COVID). Los coeficientes 
+   autorregresivos son marcadamente distintos entre regímenes, lo que 
+   implica dinámicas de persistencia y reversión a la media 
+   **estado-dependientes**.
+
+3. El modelo **Markov-Switching** captura los mismos episodios sin necesidad 
+   de imponer una variable umbral observable, a través de probabilidades 
+   filtradas. Es particularmente útil para `infl`, donde los tests 
+   paramétricos no rechazan linealidad pero BDS sí — evidencia de 
+   **cambios de régimen discretos** en lugar de transiciones suaves.
+
+4. Las **IRFs régimen-dependientes** (TVAR manual y MS condicionales) 
+   revelan **asimetrías** que el VAR lineal oculta por construcción. Para 
+   el episodio 2021–2023, estas asimetrías son económicamente relevantes: 
+   el BCRD reaccionó con mayor agresividad de lo que el VAR predice, y el 
+   costo real de la desinflación depende del régimen vigente.
+
+La principal conclusión de política es que los modelos no lineales no son 
+un ejercicio académico sino una necesidad para describir adecuadamente la 
+transmisión de shocks en economías emergentes sujetas a choques externos 
+grandes e infrecuentes.
+
+---
+
+# Referencias
+
+Banco Central de la República Dominicana (BCRD). *Estadísticas 
+macroeconómicas y financieras*. https://www.bancentral.gov.do
+
+Bernanke, B. S., y Blinder, A. S. (1992). The Federal Funds Rate and the 
+Channels of Monetary Transmission. *American Economic Review*, 82(4), 
+901–921.
+
+Brock, W. A., Dechert, W. D., Scheinkman, J. A., y LeBaron, B. (1996). 
+A test for independence based on the correlation dimension. 
+*Econometric Reviews*, 15(3), 197–235.
+
+Christiano, L. J., Eichenbaum, M., y Evans, C. L. (1999). Monetary policy 
+shocks: What have we learned and to what end? En *Handbook of 
+Macroeconomics*, vol. 1, 65–148.
+
+Hamilton, J. D. (1989). A new approach to the economic analysis of 
+nonstationary time series and the business cycle. *Econometrica*, 57(2), 
+357–384.
+
+Hansen, B. E. (1999). Testing for linearity. *Journal of Economic Surveys*, 
+13(5), 551–576.
+
+Keenan, D. M. (1985). A Tukey nonadditivity-type test for time series 
+nonlinearity. *Biometrika*, 72(1), 39–44.
+
+Koop, G., Pesaran, M. H., y Potter, S. M. (1996). Impulse response analysis 
+in nonlinear multivariate models. *Journal of Econometrics*, 74(1), 
+119–147.
+
+Sims, C. A. (1980). Macroeconomics and Reality. *Econometrica*, 48(1), 1–48.
+
+Teräsvirta, T. (1994). Specification, estimation, and evaluation of smooth 
+transition autoregressive models. *Journal of the American Statistical 
+Association*, 89(425), 208–218.
+
+Tong, H. (1990). *Non-linear Time Series: A Dynamical System Approach*. 
+Oxford University Press.
+
+Tsay, R. S. (1986). Nonlinearity tests for time series. *Biometrika*, 
+73(2), 461–466.
+
+Tsay, R. S. (1989). Testing and modeling threshold autoregressive processes. 
+*Journal of the American Statistical Association*, 84(405), 231–240.

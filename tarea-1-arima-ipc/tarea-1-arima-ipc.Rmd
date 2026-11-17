@@ -1,0 +1,1076 @@
+---
+title: "TAREA 1 25 0802"
+author: "Stephannie Acosta"
+date: "2026-02-05"
+output: pdf_document
+---
+
+>**INTRODUCCIÓN**
+
+
+>La inflación constituye uno de los principales indicadores macroeconómico, que son empleados por los bancos centrales con el fin de analizar y estudiar la estabilidad de precios y el diseño de la política monetaria. En la República Dominicana, la dinámica inflacionaria está muy influenciada por shocks externos, rigideces internas de precios y mecanismos de transmisión que generan persistencia en el tiempo.
+
+>El objetivo de esta práctica es analizar las propiedades estadísticas y la dinámica temporal de los principales componentes del Índice de Precios al Consumidor (IPC) de la República Dominicana [IPC Total, IPC Subyacente, IPC de Alimentos y Bebidas No Alcohólicas, e IPC de Transporte] utilizando un enfoque univariado de series de tiempo. Por lo que, se desarrollaron modelos ARIMA, con el fin de capturar la dependencia temporal, la persistencia inflacionaria y la volatilidad inherente a cada componente
+
+>El análisis cubre el período enero 2006 – diciembre 2024, de esta forma se acapararon fénomenos macroeconómicos relevantes como la crisis financiera internacional de 2008–2009, los efectos inflacionarios de la pandemia de COVID-19 y los recientes shocks asociados a disrupciones en cadenas de suministro y mercados energéticos. En síntesis, los resultados obtenidos ofrecen evidencia empírica relevante para comprender la naturaleza de los shocks inflacionarios y sus implicaciones para la política monetaria en la República Dominicana.
+
+
+```{r}
+
+# INTRODUCCIÓN Y CARGA DE DATOS  
+
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 12,
+  fig.height = 8
+)
+```
+
+```{r}
+# Lista de paquetes necesarios
+paquetes <- c("readxl", "tidyverse", "forecast", "tseries", "urca", 
+              "gridExtra", "ggplot2", "zoo", "lubridate", "knitr", 
+              "kableExtra", "moments")
+
+# Instalar paquetes que no estén instalados
+paquetes_nuevos <- paquetes[!(paquetes %in% installed.packages()[,"Package"])]
+if(length(paquetes_nuevos)) {
+  install.packages(paquetes_nuevos, repos = "https://cloud.r-project.org/")
+}
+
+# Cargar paquetes
+invisible(lapply(paquetes, library, character.only = TRUE, quietly = TRUE))
+
+cat("Paquetes cargados exitosamente\n")
+```
+
+```{r}
+
+# Los datos del IPC fueron obtenidos del Banco Central de
+# la República Dominicana (BCRD), a partir de las descargas
+# oficiales en formato Excel correspondientes a:
+# - Indice de Precios al Consumidor Nacional, Serie Mensual, 1984-2025
+# - Indice de Precios al Consumidor Subyacente, 2000-2025
+# - Indice de Precios al Consumidor Nacional por Grupos de Bienes y Servicios,  1999 - 2025
+# NOTA: Las series fueron depuradas y armonizadas para construir una base mensual consistente.
+
+# Ruta del archivo
+ruta_archivo <- "data/base_tarea_1.xlsx"
+
+# Leer datos
+datos_raw <- read_excel(ruta_archivo)
+
+# Mostrar estructura
+cat("=== ESTRUCTURA DE LOS DATOS ===\n")
+print(str(datos_raw))
+
+cat("\n=== PRIMERAS 10 FILAS ===\n")
+print(head(datos_raw, 10))
+
+cat("\n=== DIMENSIONES ===\n")
+cat("Filas:", nrow(datos_raw), "\n")
+cat("Columnas:", ncol(datos_raw), "\n")
+```
+
+>Los datos fueron obtenidos del Banco Central de la República Dominicana, conteniendo información mensual sobre los índices de precios al consumidor para el período comprendido entre enero de 2006 y diciembre de 2024. La base de datos original contiene 246 observaciones, de las cuales 228 son válidas después de filtrar valores faltantes. Las variables incluidas son: IPC Total, IPC Subyacente, IPC de Alimentos y Bebidas No Alcohólicas, y IPC de Transporte. Estas series representan los principales componentes de la inflación dominicana y son fundamentales para el análisis de la política monetaria del país. Las series utilizadas corresponden a índices desestacionalizados según la metodología oficial del Banco Central de la República Dominicana, lo que permite analizar la dinámica inflacionaria sin distorsiones estacionales.
+
+```{r}
+
+## ESTADÍSTICAS DESCRIPTIVAS DE LOS DATOS            
+
+# Limpiar nombres de columnas (quitar espacios)
+names(datos_raw) <- trimws(names(datos_raw))
+
+# Filtrar solo filas válidas y crear fecha
+datos <- datos_raw %>%
+  filter(!is.na(Año) & !is.na(IPC_TOTAL)) %>%
+  mutate(
+    Mes_num = match(Período, c("Enero", "Febrero", "Marzo", "Abril", "Mayo", 
+                                "Junio", "Julio", "Agosto", "Septiembre", 
+                                "Octubre", "Noviembre", "Diciembre")),
+    Fecha = as.Date(paste(Año, Mes_num, "01", sep = "-"))
+  ) %>%
+  arrange(Fecha)
+
+# Resumen
+cat("Observaciones válidas:", nrow(datos), "\n")
+cat("Fecha inicial:", format(min(datos$Fecha), "%B %Y"), "\n")
+cat("Fecha final:", format(max(datos$Fecha), "%B %Y"), "\n")
+cat("\nPrimeras 5 fechas:\n")
+print(head(datos$Fecha, 5))
+```
+
+> El período de análisis comprende 19 años completos de información mensual, desde enero de 2006 hasta diciembre de 2024, contando con un total de 228 observaciones válidas para cada serie. Lo que se comprenden que este período es suficientemente largo para capturar la dinámica inflacionaria de República Dominicana, incluyendo eventos macroeconómicos relevantes como la crisis financiera global de 2008-2009, períodos de estabilización macroeconómica, y los efectos inflacionarios de la pandemia COVID-19 durante 2020-2022.
+
+```{r}
+# Aplicar logaritmo natural a las 4 series
+datos <- datos %>%
+  mutate(
+    log_IPC_TOTAL = log(IPC_TOTAL),
+    log_IPC_SUBYACENTE = log(IPC_SUBYACENTE),
+    log_IPC_ALIMENTOS = log(IPC_ALIMENTOS),
+    log_IPC_TRANSPORTE = log(IPC_TRANSPORTE)
+  )
+
+cat("Series transformadas a logaritmos\n\n")
+
+# Mostrar primeras observaciones
+datos %>%
+  select(Fecha, log_IPC_TOTAL, log_IPC_SUBYACENTE, 
+         log_IPC_ALIMENTOS, log_IPC_TRANSPORTE) %>%
+  head(10)
+```
+
+```{r}
+# Crear series de tiempo en logaritmos
+ts_log_total <- ts(datos$log_IPC_TOTAL, start = c(2006, 1), frequency = 12)
+ts_log_subyacente <- ts(datos$log_IPC_SUBYACENTE, start = c(2006, 1), frequency = 12)
+ts_log_alimentos <- ts(datos$log_IPC_ALIMENTOS, start = c(2006, 1), frequency = 12)
+ts_log_transporte <- ts(datos$log_IPC_TRANSPORTE, start = c(2006, 1), frequency = 12)
+
+cat("Objetos ts creados exitosamente\n")
+cat("Longitud de cada serie:", length(ts_log_total), "observaciones\n")
+cat("Inicio:", start(ts_log_total), "\n")
+cat("Fin:", end(ts_log_total), "\n")
+```
+
+```{r}
+
+## Visualización de Series           
+
+
+#Series en Logaritmos
+par(mfrow = c(2, 2), mar = c(4, 4, 3, 2))
+
+plot(ts_log_total, main = "IPC Total (logaritmo natural)", 
+     ylab = "Log del IPC", xlab = "Año", col = "darkblue", lwd = 2)
+grid()
+
+plot(ts_log_subyacente, main = "IPC Subyacente (logaritmo natural)", 
+     ylab = "Log del IPC", xlab = "Año", col = "darkgreen", lwd = 2)
+grid()
+
+plot(ts_log_alimentos, main = "IPC Alimentos (logaritmo natural)", 
+     ylab = "Log del IPC", xlab = "Año", col = "darkorange", lwd = 2)
+grid()
+
+plot(ts_log_transporte, main = "IPC Transporte (logaritmo natural)", 
+     ylab = "Log del IPC", xlab = "Año", col = "darkred", lwd = 2)
+grid()
+```
+
+
+> En la Figura 1 se observan los cuatro índices de precios, que demuestran una clara tendencia creciente durante todo el período analizado, lo cual es consistente con un proceso inflacionario sostenido. 
+>El IPC Total muestra un crecimiento suave y continuo, reflejando la acumulación gradual de aumentos de precios en la economía dominicana. 
+>El IPC Subyacente presenta la trayectoria más estable, con menor variabilidad que los demás componentes, lo cual es esperable dado que excluye los elementos más volátiles (alimentos y energía).
+> El IPC de Alimentos exhibe un patrón de crecimiento similar al IPC Total pero con mayor volatilidad, especialmente visible en períodos específicos que coinciden con shocks en los mercados internacionales de commodities agrícolas y eventos climáticos adversos. 
+>El IPC de Transporte muestra la mayor volatilidad de los cuatro índices, con fluctuaciones pronunciadas que reflejan la sensibilidad de este componente a los cambios en los precios internacionales del petróleo y las políticas gubernamentales sobre combustibles.
+
+> En conclusión, se observa una tendencia creciente para todas las series, lo que sugiere la presencia de raíz unitaria, lo que implica que las series en niveles no son estacionarias y requerirán diferenciación para su análisis mediante modelos ARIMA.
+
+
+```{r}
+#Primeras Diferencias
+par(mfrow = c(2, 2), mar = c(4, 4, 3, 2))
+
+plot(diff(ts_log_total), main = "IPC Total - Primera Diferencia", 
+     ylab = "var.log(IPC)", xlab = "Año", col = "darkblue", lwd = 1.5)
+abline(h = 0, col = "red", lty = 2)
+grid()
+
+plot(diff(ts_log_subyacente), main = "IPC Subyacente - Primera Diferencia", 
+     ylab = "var.log(IPC)", xlab = "Año", col = "darkgreen", lwd = 1.5)
+abline(h = 0, col = "red", lty = 2)
+grid()
+
+plot(diff(ts_log_alimentos), main = "IPC Alimentos - Primera Diferencia", 
+     ylab = "var.log(IPC)", xlab = "Año", col = "darkorange", lwd = 1.5)
+abline(h = 0, col = "red", lty = 2)
+grid()
+
+plot(diff(ts_log_transporte), main = "IPC Transporte - Primera Diferencia", 
+     ylab = "var.log(IPC)", xlab = "Año", col = "darkred", lwd = 1.5)
+abline(h = 0, col = "red", lty = 2)
+grid()
+```
+
+> En la Figura 2, se obtuvieron las primeras diferencias de los logaritmos de los índices de precios, las cuales representan las tasas de inflación mensual aproximadas. A diferencia de las series en niveles, las series diferenciadas fluctúan alrededor de cero, lo cual es indicativo de estacionariedad en varianza y media.
+> El IPC Total diferenciado muestra una inflación mensual promedio positiva con períodos de mayor variabilidad, particularmente durante 2008-2009 (crisis financiera internacional) y 2021-2022 (post-pandemia). El IPC Subyacente diferenciado presenta la menor volatilidad, con variaciones mensuales más pequeñas y predecibles, lo que confirma su utilidad como indicador de la tendencia subyacente de la inflación.
+> El IPC de Alimentos diferenciado exhibe mayor amplitud en las fluctuaciones, con episodios de inflación mensual alta seguidos de períodos de deflación o baja inflación, reflejando la naturaleza transitoria de los shocks que afectan los precios de alimentos. El IPC de Transporte diferenciado muestra los cambios mensuales más pronunciados, con picos y valles marcados que responden a ajustes en los subsidios a los combustibles y cambios abruptos en los precios del petróleo internacional.
+> En conclusión, la estabilidad observada en las series diferenciadas alrededor de cero sugiere que una diferenciación de orden uno (d=1) será suficiente para alcanzar estacionariedad en todas las series.
+
+```{r}
+# Calcular inflación interanual (diferencia de 12 meses)
+infl_total <- diff(ts_log_total, lag = 12) * 100
+infl_subyacente <- diff(ts_log_subyacente, lag = 12) * 100
+infl_alimentos <- diff(ts_log_alimentos, lag = 12) * 100
+infl_transporte <- diff(ts_log_transporte, lag = 12) * 100
+
+par(mfrow = c(2, 2), mar = c(4, 4, 3, 2))
+
+plot(infl_total, main = "Inflación Interanual - IPC Total", 
+     ylab = "Variación % interanual", xlab = "Año", col = "darkblue", lwd = 2)
+abline(h = 0, col = "red", lty = 2)
+grid()
+
+plot(infl_subyacente, main = "Inflación Interanual - IPC Subyacente", 
+     ylab = "Variación % interanual", xlab = "Año", col = "darkgreen", lwd = 2)
+abline(h = 0, col = "red", lty = 2)
+grid()
+
+plot(infl_alimentos, main = "Inflación Interanual - IPC Alimentos", 
+     ylab = "Variación % interanual", xlab = "Año", col = "darkorange", lwd = 2)
+abline(h = 0, col = "red", lty = 2)
+grid()
+
+plot(infl_transporte, main = "Inflación Interanual - IPC Transporte", 
+     ylab = "Variación % interanual", xlab = "Año", col = "darkred", lwd = 2)
+abline(h = 0, col = "red", lty = 2)
+grid()
+```
+
+> En la Figura 3, la inflación interanual, calculada como la variación porcentual de los índices de precios respecto a 12 meses atrás, proporciona una medida más suavizada de la presión inflacionaria y es la métrica comúnmente utilizada por los bancos centrales para la toma de decisiones de política monetaria.
+
+> El IPC Total interanual muestra varios picos inflacionarios significativos:
+> En 2008-2009: La inflación alcanzó niveles cercanos al 10-12% anual debido a la crisis financiera global y el encarecimiento de commodities.
+> En 2011-2012: Nuevo episodio inflacionario asociado al alza en precios de alimentos y combustibles a nivel internacional.
+>En 2021-2022: El pico inflacionario más reciente, con tasas superiores al 8%, resultado de las disrupciones en las cadenas de suministro post-COVID-19, políticas monetarias expansivas, y el conflicto Rusia-Ucrania que elevó precios de energía y alimentos.
+> El IPC Subyacente interanual muestra una trayectoria más suave, manteniéndose generalmente por debajo del IPC Total, lo que indica que los episodios de alta inflación han sido impulsados principalmente por componentes volátiles. Esta característica hace del IPC Subyacente un mejor indicador para evaluar presiones inflacionarias de mediano plazo.
+> El IPC de Alimentos interanual exhibe la mayor volatilidad, con tasas que han oscilado entre valores negativos (deflación en alimentos) y picos superiores al 15%, reflejando la alta sensibilidad de los precios agrícolas a factores climáticos, políticas comerciales, y fluctuaciones en mercados internacionales de commodities.
+> El IPC de Transporte interanual muestra los cambios más dramáticos, con episodios de inflación superior al 20% seguidos de períodos de deflación, directamente correlacionados con los ciclos de precios del petróleo y ajustes en las políticas de subsidios gubernamentales a los combustibles.
+
+```{r}
+#Análisis de Raíz Unitaria
+
+realizar_adf <- function(serie, nombre) {
+  cat("\n================================================\n")
+  cat("PRUEBA ADF:", nombre, "\n")
+  cat("================================================\n")
+  
+  # ADF con constante (sin tendencia)
+  adf_drift <- ur.df(serie, type = "drift", lags = 12, selectlags = "AIC")
+  
+  # Mostrar resultados
+  cat("\n--- Con constante (sin tendencia) ---\n")
+  cat("Estadístico tau2:", round(adf_drift@teststat[1,1], 4), "\n")
+  cat("Valor crítico 1%:", round(adf_drift@cval[1,1], 4), "\n")
+  cat("Valor crítico 5%:", round(adf_drift@cval[1,2], 4), "\n")
+  cat("Valor crítico 10%:", round(adf_drift@cval[1,3], 4), "\n")
+  
+  # Interpretación
+  if(adf_drift@teststat[1,1] < adf_drift@cval[1,2]) {
+    cat("\nCONCLUSIÓN: Se rechaza H0 al 5% → Serie ESTACIONARIA\n")
+  } else {
+    cat("\nCONCLUSIÓN: No se rechaza H0 al 5% → Serie NO ESTACIONARIA\n")
+  }
+  
+  cat("================================================\n")
+  
+  return(adf_drift)
+}
+```
+
+
+```{r}
+# PRUEBAS ADF EN NIVELES (logaritmos)              
+
+
+adf_total_niv <- realizar_adf(ts_log_total, "IPC Total (log)")
+adf_subyacente_niv <- realizar_adf(ts_log_subyacente, "IPC Subyacente (log)")
+adf_alimentos_niv <- realizar_adf(ts_log_alimentos, "IPC Alimentos (log)")
+adf_transporte_niv <- realizar_adf(ts_log_transporte, "IPC Transporte (log)")
+```
+
+> Para todas las series de IPC en logaritmos, los estadísticos ADF calculados son mayores (menos negativos) que el valor crítico al 5% de significancia (-2.88). Específicamente:
+> - El **IPC Total** presenta un estadístico de -0.8421, muy por encima del valor crítico.
+> - El **IPC Subyacente** tiene un estadístico de 0.0205, incluso positivo, evidenciando clara no estacionariedad.
+> - El **IPC de Alimentos** muestra un estadístico de -0.4036.
+> - El **IPC de Transporte** registra -1.3024, el más negativo pero aún insuficiente para rechazar H0.
+
+> En consecuencia, no se rechaza la hipótesis nula de raíz unitaria para ninguna de las cuatro series al 5%. Esto confirma que las series en niveles son procesos integrados de orden uno, I(1), requiriendo una diferenciación para alcanzar estacionariedad.
+
+> Este hallazgo es consistente con la teoría económica, debido a que los índices de precios típicamente siguen procesos de raíz unitaria donde los shocks tienen efectos permanentes sobre el nivel de precios, aunque los cambios en los precios (inflación) pueden ser estacionarios.
+
+```{r}
+knitr::asis_output("
+# PRUEBAS ADF EN PRIMERAS DIFERENCIAS
+")
+
+adf_total_diff <- realizar_adf(diff(ts_log_total), "var. IPC Total")
+adf_subyacente_diff <- realizar_adf(diff(ts_log_subyacente), "var. IPC Subyacente")
+adf_alimentos_diff <- realizar_adf(diff(ts_log_alimentos), "var. IPC Alimentos")
+adf_transporte_diff <- realizar_adf(diff(ts_log_transporte), "var. IPC Transporte")
+```
+
+> Aplicando primeras diferencias a las series en logaritmos, se obtienen las tasas de inflación mensual aproximadas. Los resultados de la prueba ADF sobre estas series diferenciadas muestran mejoras sustanciales en la estacionariedad:
+> El **IPC Total diferenciado** presenta un estadístico ADF de -7.5846, significativamente menor que el valor crítico de -2.88, lo que permite rechazar contundentemente la hipótesis nula de raíz unitaria al 1% de significancia. Esto confirma que la serie diferenciada es estacionaria.
+> El **IPC de Alimentos diferenciado** registra un estadístico de -4.3769, también rechazando claramente H0y confirmando estacionariedad después de una diferenciación.
+> El **IPC de Transporte diferenciado** muestra un estadístico de -7.5080, el más negativo junto con el IPC Total, indicando fuerte estacionariedad en la serie diferenciada.
+> **Caso especial - IPC Subyacente**: El estadístico de -2.3619 es ligeramente mayor que el valor crítico al 5% (-2.88), sugiriendo que técnicamente no se rechaza H0a ese nivel. Sin embargo, el estadístico es menor que el valor crítico al 10% (-2.57), por lo que se rechaza H0al 10% de significancia. Además, la proximidad al umbral del 5% y la mejora sustancial respecto al nivel (-0.8421 vs -2.3619) sugieren que la serie diferenciada es "casi estacionaria" o débilmente no estacionaria. 
+
+> En la práctica, trataremos el IPC Subyacente diferenciado como estacionario para efectos del modelado ARIMA, considerando que:
+
+> 1. Una segunda diferenciación (d=2) podría generar sobrediferenciación
+
+> 2. Los modelos ARIMA(p,1,q) con d=1 capturarán adecuadamente la dinámica restante
+
+> 3. El diagnóstico de residuos validará si esta decisión es apropiada
+
+> **Conclusión**: Las cuatro series son **integradas de orden 1**, I(1), lo que significa que requieren una diferenciación para alcanzar estacionariedad. Por lo tanto, todos los modelos ARIMA tendrán **d = 1**.
+
+
+```{r}
+#Preparación de los Datos
+
+# Función para calcular estadísticas
+diff_total <- diff(ts_log_total)
+diff_subyacente <- diff(ts_log_subyacente)
+diff_alimentos <- diff(ts_log_alimentos)
+diff_transporte <- diff(ts_log_transporte)
+
+cat("IPC Total:\n")
+cat("Media:", mean(diff_total), "\n")
+cat("Desv Est:", sd(diff_total), "\n")
+cat("Min:", min(diff_total), "\n")
+cat("Max:", max(diff_total), "\n")
+
+cat("\nIPC Subyacente:\n")
+cat("Media:", mean(diff_subyacente), "\n")
+cat("Desv Est:", sd(diff_subyacente), "\n")
+
+cat("\nIPC Alimentos:\n")
+cat("Media:", mean(diff_alimentos), "\n")
+cat("Desv Est:", sd(diff_alimentos), "\n")
+
+cat("\nIPC Transporte:\n")
+cat("Media:", mean(diff_transporte), "\n")
+cat("Desv Est:", sd(diff_transporte), "\n")
+
+
+tabla_descriptiva <- tibble(
+  Serie = c("IPC Total", "IPC Subyacente",
+           "IPC Alimentos", "IPC Transporte"),
+  Media = c(mean(diff_total), mean(diff_subyacente),
+           mean(diff_alimentos), mean(diff_transporte)),
+  Varianza = c(var(diff_total), var(diff_subyacente),
+              var(diff_alimentos), var(diff_transporte)),
+  Desv_Estandar = c(sd(diff_total), sd(diff_subyacente),
+                   sd(diff_alimentos), sd(diff_transporte)),
+  Minimo = c(min(diff_total), min(diff_subyacente),
+            min(diff_alimentos), min(diff_transporte)),
+  Maximo = c(max(diff_total), max(diff_subyacente),
+            max(diff_alimentos), max(diff_transporte))
+)
+
+kable(tabla_descriptiva,
+  caption = "Estadisticas descriptivas de la inflacion mensual",
+  digits = 6) %>%
+  kableExtra::kable_styling(full_width = FALSE)
+
+
+
+# GRÁFICOS DE SERIES DE TIEMPO
+
+# Helper: ts -> tibble con fecha (mensual) y valores
+ts_to_df <- function(x, nombre) {
+  # time(x) devuelve el tiempo en formato decimal; lo convertimos a Year/Month aproximado
+  tt <- time(x)
+  anio <- floor(tt)
+  mes  <- round((tt - anio) * frequency(x)) + 1
+  mes[mes == 13] <- 12  # por redondeos extremos
+
+  tibble(
+    date  = as.Date(sprintf("%d-%02d-01", anio, mes)),
+    value = as.numeric(x),
+    Serie = nombre
+  )
+}
+
+# Dataframes niveles (log)
+df_log <- bind_rows(
+  ts_to_df(ts_log_total,      "IPC Total (log)"),
+  ts_to_df(ts_log_subyacente, "IPC Subyacente (log)"),
+  ts_to_df(ts_log_alimentos,  "IPC Alimentos (log)"),
+  ts_to_df(ts_log_transporte, "IPC Transporte (log)")
+)
+
+# Dataframes diferencias (inflación mensual aprox.)
+df_diff <- bind_rows(
+  ts_to_df(diff_total,      "IPC Total (diflog)"),
+  ts_to_df(diff_subyacente, "IPC Subyacente (diflog)"),
+  ts_to_df(diff_alimentos,  "IPC Alimentos (diflog)"),
+  ts_to_df(diff_transporte, "IPC Transporte (diflog)")
+)
+
+
+#Gráfico: Niveles (log) - Facetas
+
+ggplot(df_log, aes(x = date, y = value)) +
+  geom_line(linewidth = 0.6) +
+  facet_wrap(~ Serie, scales = "free_y", ncol = 1) +
+  labs(
+    title = "Series en niveles (logaritmo)",
+    x = NULL, y = NULL
+  ) +
+  theme_minimal(base_size = 12)
+
+
+#Gráfico: Diferencias (inflación mensual) - Facetas
+
+ggplot(df_diff, aes(x = date, y = value)) +
+  geom_hline(yintercept = 0, linetype = "dashed", linewidth = 0.4) +
+  geom_line(linewidth = 0.6) +
+  facet_wrap(~ Serie, scales = "free_y", ncol = 1) +
+  labs(
+    title = "Inflación mensual aproximada (dif log)",
+    subtitle = "Diferencia mensual del log: aproxima la tasa de crecimiento mensual",
+    x = NULL, y = NULL
+  ) +
+  theme_minimal(base_size = 12)
+
+
+#Comparativo: todas las diflog en un mismo plot 
+
+ggplot(df_diff %>% mutate(Serie = gsub(" \\(diflog\\)", "", Serie)),
+       aes(x = date, y = value, group = Serie)) +
+  geom_hline(yintercept = 0, linetype = "dashed", linewidth = 0.4) +
+  geom_line(linewidth = 0.7) +
+  labs(
+    title = "Comparación de inflación mensual (dif log) por componente",
+    x = NULL, y = NULL
+  ) +
+  theme_minimal(base_size = 12)
+
+mat_corr <- cor(cbind(
+  Total     = as.numeric(diff_total),
+  Subyacente = as.numeric(diff_subyacente),
+  Alimentos  = as.numeric(diff_alimentos),
+  Transporte = as.numeric(diff_transporte)
+))
+
+kable(round(mat_corr, 4),
+  caption = "Correlaciones entre tasas de inflacion mensual") %>%
+  kableExtra::kable_styling(full_width = FALSE)
+
+
+```
+
+> Las estadísticas descriptivas de las series diferenciadas (inflación mensual) revelan patrones importantes sobre la dinámica inflacionaria de República Dominicana durante el período 2006-2024:
+
+> **Inflación Promedio Mensual:**
+> - El **IPC de Alimentos** presenta la mayor inflación promedio mensual (0.47%), equivalente aproximadamente a 5.6% anual, reflejando presiones inflacionarias persistentes en este componente.
+> - El **IPC de Transporte** registra 0.38% mensual (4.6% anual), afectado por la tendencia alcista de los precios del petróleo.
+> - El **IPC Total** muestra 0.38% mensual (4.5% anual), representando la inflación general de la economía.
+> - El **IPC Subyacente** tiene la menor inflación promedio (0.34% mensual  4.0% anual), indicando que las presiones inflacionarias subyacentes han sido moderadas.
+
+> **Volatilidad (Desviación Estándar):**
+> La variabilidad de la inflación mensual difiere significativamente entre componentes:
+> - El **IPC de Transporte** es el más volátil (varianza = 0.0181 o 1.81%), más de **7 veces más volátil** que el IPC Subyacente. Esta alta volatilidad refleja la naturaleza errática de los precios del petróleo internacional y los ajustes frecuentes en subsidios gubernamentales.
+> - El **IPC de Alimentos** presenta volatilidad intermedia (varianza = 0.0091), casi **4 veces más volátil** que el Subyacente, debido a la sensibilidad de los precios agrícolas a factores climáticos y fluctuaciones en mercados internacionales de commodities.
+> - El **IPC Total** muestra volatilidad moderada (varianza = 0.0057), siendo un promedio ponderado de todos los componentes.
+> - El **IPC Subyacente** es el menos volátil (varianza = 0.0024), confirmando su utilidad como indicador de tendencia inflacionaria de mediano plazo, crucial para las decisiones de política monetaria del Banco Central.
+
+> En conclusión
+
+> 1. La alta volatilidad del IPC Transporte sugiere que este componente es el principal contribuyente a las fluctuaciones de corto plazo en la inflación total.
+
+> 2. La estabilidad del IPC Subyacente indica que las presiones inflacionarias estructurales han sido relativamente contenidas.
+
+> 3. La volatilidad del IPC Alimentos plantea desafíos para la seguridad alimentaria y el bienestar de los hogares de menores ingresos.
+
+
+```{r}
+#Identificación del Modelo ARIMA
+
+#ACF y PACF - IPC Total
+par(mfrow = c(1, 2))
+Acf(diff(ts_log_total), main = "ACF - IPC Total (diferenciado)", lag.max = 36)
+Pacf(diff(ts_log_total), main = "PACF - IPC Total (diferenciado)", lag.max = 36)
+```
+
+> **ACF**: Presenta varios rezagos significativos, particularmente en los rezagos 1, 10, 11 y 12, aunque la mayoría de las autocorrelaciones son pequeñas en magnitud. El patrón no muestra un corte abrupto claro, sino más bien un decaimiento gradual con algunos rezagos específicos sobresaliendo.
+> **PACF**: Muestra significancia en los rezagos 1, 10, 11 y 12, con un patrón similar al ACF pero con magnitudes que decaen gradualmente después del primer rezago.
+> **Identificación del modelo**: Dado que tanto la ACF como la PACF muestran decaimiento gradual sin cortes abruptos claros, esto sugiere un proceso **ARMA mixto**. Los rezagos significativos en las posiciones 10-12 podrían indicar un componente estacional no modelado, pero dado que la instrucción es trabajar con series desestacionalizadas, estos efectos deberían ser residuales.
+
+> **Con base en los correlogramas ACF y PACF, y siguiendo el principio de parsimonia, se proponen los siguientes modelos candidatos:**: 
+> - **ARIMA(1,1,1)**: Modelo parsimonioso que captura persistencia AR y corrección MA
+> - **ARIMA(2,1,1)**: Alternativa con mayor orden AR
+> - **ARIMA(1,1,2)**: Alternativa con mayor orden MA
+
+```{r}
+#ACF y PACF - IPC Subyacente
+par(mfrow = c(1, 2))
+Acf(diff(ts_log_subyacente), main = "ACF - IPC Subyacente (diferenciado)", lag.max = 36)
+Pacf(diff(ts_log_subyacente), main = "PACF - IPC Subyacente (diferenciado)", lag.max = 36)
+```
+
+> **ACF**: Muestra autocorrelaciones significativas en múltiples rezagos (1-4, 6), con un patrón de decaimiento exponencial. Las autocorrelaciones son positivas en los primeros rezagos y decaen gradualmente, sugiriendo persistencia en los shocks.
+> **PACF**: Presenta picos significativos en los rezagos 1, 3 y 6, con un patrón que no muestra corte abrupto sino decaimiento gradual.
+> **Identificación del modelo**: El patrón de ambas funciones sugiere un proceso **ARMA mixto complejo**. La significancia en múltiples rezagos del PACF sugiere la necesidad de incluir varios términos autorregresivos.
+> **Modelos propuestos**:
+> - **ARIMA(1,1,1)**: Modelo base parsimonioso
+> - **ARIMA(3,1,1)**: Modelo con tres rezagos AR para capturar la estructura observada en el PACF
+
+> La complejidad del IPC Subyacente es consistente con la teoría económica, ya que los precios "sticky" (rígidos) de servicios y bienes procesados se ajustan gradualmente, generando mayor persistencia y estructura de rezagos.
+
+```{r}
+#ACF y PACF - IPC Alimentos
+par(mfrow = c(1, 2))
+Acf(diff(ts_log_alimentos), main = "ACF - IPC Alimentos (diferenciado)", lag.max = 36)
+Pacf(diff(ts_log_alimentos), main = "PACF - IPC Alimentos (diferenciado)", lag.max = 36)
+```
+
+> **ACF**: Muestra un pico significativo en el rezago 1 que es el más pronunciado, seguido de autocorrelaciones menores en rezagos posteriores que permanecen dentro de las bandas de confianza. El patrón sugiere un corte relativamente rápido después del primer rezago.
+> **PACF**: Presenta significancia en los rezagos 1 y 2, con los demás rezagos dentro de las bandas de confianza. El patrón muestra cierto decaimiento después de los primeros dos rezagos.
+> **Identificación del modelo**: La ACF con corte más claro después del primer rezago sugiere dominancia de un componente **MA(1)**, mientras que el PACF con significancia en 1-2 rezagos sugiere posible componente AR de orden bajo.
+> **Modelos propuestos**:
+> - **ARIMA(0,1,1)**: Modelo MA puro, parsimonioso
+> - **ARIMA(1,1,1)**: Modelo mixto capturando tanto persistencia AR como corrección MA
+
+> La naturaleza del IPC Alimentos con fuerte componente MA es consistente con shocks transitorios (climáticos, de oferta) que afectan temporalmente los precios pero cuyos efectos se disipan relativamente rápido.
+
+```{r}
+#ACF y PACF - IPC Transporte
+par(mfrow = c(1, 2))
+Acf(diff(ts_log_transporte), main = "ACF - IPC Transporte (diferenciado)", lag.max = 36)
+Pacf(diff(ts_log_transporte), main = "PACF - IPC Transporte (diferenciado)", lag.max = 36)
+```
+
+> **ACF**: Muestra un pico significativo claro en el rezago 1, superando ampliamente las bandas de confianza. Los demás rezagos permanecen dentro de las bandas. Este patrón es característico de un proceso **MA(1)** donde la autocorrelación se corta abruptamente después del primer rezago.
+> **PACF**: También presenta un pico significativo en el rezago 1, con los demás rezagos dentro de las bandas de confianza. Este patrón es característico de un proceso **AR(1)** donde la autocorrelación parcial se corta después del primer rezago.
+> **Identificación del modelo**: Este es un caso interesante donde tanto la ACF como la PACF presentan patrones claros pero señalan procesos diferentes:
+> - La **ACF** sugiere **MA(1)** (corte en lag 1)
+> - La **PACF** sugiere **AR(1)** (corte en lag 1)
+> Cuando ambas funciones muestran cortes en el mismo rezago, esto puede indicar que tanto el componente AR como MA están presentes, o que un modelo simple de uno u otro puede ser suficiente.
+> **Modelos propuestos**:
+> - **ARIMA(1,1,0)**: Modelo AR puro
+> - **ARIMA(0,1,1)**: Modelo MA puro
+> - **ARIMA(1,1,1)**: Modelo mixto que combina ambos componentes
+
+> La simplicity de la estructura ACF/PACF del IPC Transporte es consistente con que los shocks de precios del petróleo tienen efectos relativamente directos y de corta duración sobre los precios del transporte, sin estructuras de rezagos complejas.
+
+```{r}
+#Estimación del Modelo
+
+# Funcion para estimar modelo y mostrar resultados
+estimar_modelo <- function(serie, orden, nombre) {
+  cat("\n==================================================\n")
+  cat("MODELO:", nombre, "- ARIMA", paste0("(", paste(orden, collapse=","), ")"), "\n")
+  cat("==================================================\n")
+  
+  # Estimar modelo
+  modelo <- Arima(serie, order = orden, include.constant = TRUE)
+  
+  # Mostrar resumen
+  print(summary(modelo))
+  
+  # Criterios de informacion
+  cat("\nCriterios de informacion:\n")
+  cat("AIC:", round(modelo$aic, 4), "\n")
+  cat("BIC:", round(modelo$bic, 4), "\n")
+  cat("AICc:", round(modelo$aicc, 4), "\n")
+  
+  # Test Ljung-Box para residuos
+  lb_test <- Box.test(residuals(modelo), lag = 20, type = "Ljung-Box", 
+                      fitdf = sum(orden[1:2]))
+  cat("\nTest Ljung-Box (H0: no autocorrelacion):\n")
+  cat("Estadistico:", round(lb_test$statistic, 4), "\n")
+  cat("p-valor:", round(lb_test$p.value, 4), "\n")
+  
+  if(lb_test$p.value > 0.05) {
+    cat("Conclusion: No se rechaza H0 - Residuos son ruido blanco\n")
+  } else {
+    cat("Conclusion: Se rechaza H0 - Hay autocorrelacion residual\n")
+  }
+  
+  return(modelo)
+}
+```
+
+```{r}
+
+knitr::asis_output("
+# ESTIMACION: IPC TOTAL
+")
+
+
+# Modelo 1: ARIMA(1,1,1)
+modelo_total_111 <- estimar_modelo(ts_log_total, c(1,1,1), "IPC Total")
+
+# Modelo 2: ARIMA(2,1,1)
+modelo_total_211 <- estimar_modelo(ts_log_total, c(2,1,1), "IPC Total")
+
+# Modelo 3: ARIMA(1,1,2)
+modelo_total_112 <- estimar_modelo(ts_log_total, c(1,1,2), "IPC Total")
+
+# Comparacion
+cat("\n=== COMPARACION DE MODELOS IPC TOTAL ===\n")
+cat("Modelo        AIC        BIC       AICc\n")
+cat("ARIMA(1,1,1):", round(modelo_total_111$aic,2), " ", 
+    round(modelo_total_111$bic,2), " ", round(modelo_total_111$aicc,2), "\n")
+cat("ARIMA(2,1,1):", round(modelo_total_211$aic,2), " ", 
+    round(modelo_total_211$bic,2), " ", round(modelo_total_211$aicc,2), "\n")
+cat("ARIMA(1,1,2):", round(modelo_total_112$aic,2), " ", 
+    round(modelo_total_112$bic,2), " ", round(modelo_total_112$aicc,2), "\n")
+```
+
+
+> Se estimaron tres modelos ARIMA alternativos para el IPC Total, comparando su ajuste mediante los criterios de información de Akaike (AIC) y Bayesiano (BIC), así como el test de Ljung-Box para autocorrelación residual.
+
+> **Modelo seleccionado: ARIMA(1,1,1)**
+> - **Criterios de información**: Presenta el menor AIC (-1739.65) y el menor BIC (-1725.95) entre los tres modelos estimados. El principio de parsimonia favorece este modelo más simple cuando tiene mejor ajuste que alternativas más complejas.
+> - **Coeficientes estimados**:
+>   - AR(1) = 0.4250 (s.e. = 0.1411): **Significativo al 1%**. Indica persistencia moderada; un shock inflacionario de 1% en el período t tiene un efecto de 0.42% en el período t+1.
+>   - MA(1) = -0.0133 (s.e. = 0.1553): No significativo estadísticamente, pero su inclusión mejora el ajuste general del modelo.
+>   - Drift = 0.0038 (s.e. = 0.0006): **Significativo**, representa la tendencia inflacionaria mensual promedio de 0.38%.
+> - **Diagnóstico de residuos**: Test de Ljung-Box con p-valor = 0.414 >> 0.05, **no se rechaza H0** de ausencia de autocorrelación residual. Los residuos se comportan como ruido blanco 
+> - **Varianza residual**: varianza^2 = 2.695×10^5
+
+> Los modelos alternativos ARIMA(2,1,1) y ARIMA(1,1,2) tienen AIC y BIC más altos (peor ajuste), y aunque también pasan el test de Ljung-Box, su mayor complejidad no se justifica por mejoras en el ajuste.
+
+> La interpretación económica para el modelo ARIMA(1,1,1) es que este logra capturar adecuadamente la dinámica inflacionaria del IPC Total. El coeficiente AR positivo indica que los shocks inflacionarios tienen efectos que persisten varios meses, lo cual es consistente con rigideces de precios y expectativas adaptativas en la economía dominicana.
+
+```{r}
+
+knitr::asis_output("
+# ESTIMACION: IPC SUBYACENTE
+")
+
+
+
+# Modelo 1: ARIMA(1,1,1)
+modelo_subyacente_111 <- estimar_modelo(ts_log_subyacente, c(1,1,1), "IPC Subyacente")
+
+# Modelo 2: ARIMA(3,1,1)
+modelo_subyacente_311 <- estimar_modelo(ts_log_subyacente, c(3,1,1), "IPC Subyacente")
+
+# Comparacion
+cat("\n=== COMPARACION DE MODELOS IPC SUBYACENTE ===\n")
+cat("Modelo        AIC        BIC       AICc\n")
+cat("ARIMA(1,1,1):", round(modelo_subyacente_111$aic,2), " ", 
+    round(modelo_subyacente_111$bic,2), " ", round(modelo_subyacente_111$aicc,2), "\n")
+cat("ARIMA(3,1,1):", round(modelo_subyacente_311$aic,2), " ", 
+    round(modelo_subyacente_311$bic,2), " ", round(modelo_subyacente_311$aicc,2), "\n")
+```
+
+> El ARIMA(3,1,1) presenta AIC y BIC significativamente menores que el ARIMA(1,1,1), indicando mejor ajuste a pesar de su mayor complejidad.
+> La Varianza residual (4.558×10^6), con esta elección se obtuvo la más baja de todas las series, indicando mayor capacidad de predicción
+> Es fundamental resaltar que ambos modelos muestran **autocorrelación residual significativa** (p-valor = 0.000 en test de Ljung-Box). Lo que indica que ninguno de los dos modelos captura completamente la estructura temporal del IPC Subyacente.
+> Unas de las potenciales causas de este problema, son:
+> 1.Componente estacional no capturado: A pesar de que la serie está desestacionalizada, pueden quedar efectos estacionales residuales.
+> 2.Quiebres estructurales: Cambios en el régimen de política monetaria no modelados.
+> 3.No linealidades: La dinámica del IPC Subyacente podría ser no lineal.
+
+> En conclusión: Se selecciona el ARIMA(3,1,1) porque:
+> - Tiene significativamente mejor ajuste (menor AIC/BIC)
+> - La autocorrelación residual, aunque presente, es menor que en el ARIMA(1,1,1)
+> - Los coeficientes son todos significativos y tienen sentido económico
+
+> Para un análisis futuro, se deberia considerar
+> - Modelos SARIMA con componente estacional
+> - Análisis de intervención para quiebres estructurales
+> - Modelos de heterocedasticidad condicional (GARCH)
+
+> Luego de analizar los resultados obtenidos la interpretación económica, es que la complejidad del modelo (3 rezagos AR + 1 MA) refleja los ajustes graduales y complejos de los precios subyacentes. Los coeficientes AR alternando en signo (positivo-negativo-positivo) sugieren un proceso oscilatorio con correcciones, típico de mercados con rigideces de precios donde los ajustes no son instantáneos sino distribuidos en el tiempo.
+
+
+```{r}
+knitr::asis_output("
+# ESTIMACION: IPC ALIMENTOS
+")
+
+# Modelo 1: ARIMA(0,1,1)
+modelo_alimentos_011 <- estimar_modelo(ts_log_alimentos, c(0,1,1), "IPC Alimentos")
+
+# Modelo 2: ARIMA(1,1,1)
+modelo_alimentos_111 <- estimar_modelo(ts_log_alimentos, c(1,1,1), "IPC Alimentos")
+
+# Comparacion
+cat("\n=== COMPARACION DE MODELOS IPC ALIMENTOS ===\n")
+cat("Modelo        AIC        BIC       AICc\n")
+cat("ARIMA(0,1,1):", round(modelo_alimentos_011$aic,2), " ", 
+    round(modelo_alimentos_011$bic,2), " ", round(modelo_alimentos_011$aicc,2), "\n")
+cat("ARIMA(1,1,1):", round(modelo_alimentos_111$aic,2), " ", 
+    round(modelo_alimentos_111$bic,2), " ", round(modelo_alimentos_111$aicc,2), "\n")
+```
+
+> **Modelo seleccionado: ARIMA(1,1,1)**
+> A pesar de que el ARIMA(0,1,1) tiene AIC ligeramente menor (-1515.50 vs -1514.44), se selecciona el **ARIMA(1,1,1)** por razones de diagnóstico:
+
+> **ARIMA(0,1,1) - NO seleccionado**:
+> - Mejor AIC y BIC
+> - **PROBLEMA**: Test de Ljung-Box con p-valor = 0.020 < 0.05
+> - **Se rechaza H0**: Hay autocorrelación residual significativa 
+> - Esto viola el supuesto fundamental de residuos ruido blanco
+
+> **ARIMA(1,1,1) - SELECCIONADO** 
+> - **Coeficientes estimados**:
+>   - AR(1) = -0.1647 (s.e. = 0.1680): No significativo al 5%, pero marginalmente relevante
+>   - MA(1) = 0.5495 (s.e. = 0.1446): **Significativo al 1%**. Indica que los shocks en precios de alimentos tienen efectos correctivos fuertes en el período siguiente.
+>   - Drift = 0.0047: Inflación mensual promedio de 0.47% (la más alta)
+> - **Diagnóstico**: Test de Ljung-Box con p-valor = 0.062 > 0.05
+> - **No se rechaza H0**: Residuos sin autocorrelación significativa 
+> - **Varianza residual**: varianza^2 = 7.255×10^5 (la más alta, indicando mayor imprevisibilidad)
+
+> Justificación de la selección: En econometría de series de tiempo, es más importante tener residuos que cumplan los supuestos del modelo (ruido blanco) que tener un AIC marginalmente mejor. El ARIMA(1,1,1) pasa el test de Ljung-Box y proporciona inferencia estadística válida.
+
+> Interpretación económica: 
+> - El coeficiente **MA(1) = 0.55** es el más alto entre todas las series, indicando que los shocks en precios de alimentos son predominantemente transitorios. Un shock positivo (aumento de precios) en el mes t genera una corrección al alza de 0.55 veces ese shock en t+1.
+> - El coeficiente AR negativo (aunque no significativo) sugiere una leve tendencia a la reversión a la media.
+> - La alta volatilidad (varianza^2) refleja la naturaleza errática de los precios agrícolas, afectados por clima, cosechas, y mercados internacionales de commodities.
+> - La mayor inflación promedio (0.47% mensual) en alimentos tiene implicaciones importantes para la seguridad alimentaria y el bienestar de hogares de bajos ingresos en República Dominicana.
+
+```{r}
+
+knitr::asis_output("
+# ESTIMACION: IPC TRANSPORTE
+")
+
+# Modelo 1: ARIMA(1,1,0)
+modelo_transporte_110 <- estimar_modelo(ts_log_transporte, c(1,1,0), "IPC Transporte")
+
+# Modelo 2: ARIMA(0,1,1)
+modelo_transporte_011 <- estimar_modelo(ts_log_transporte, c(0,1,1), "IPC Transporte")
+
+# Modelo 3: ARIMA(1,1,1)
+modelo_transporte_111 <- estimar_modelo(ts_log_transporte, c(1,1,1), "IPC Transporte")
+
+# Comparacion
+cat("\n=== COMPARACION DE MODELOS IPC TRANSPORTE ===\n")
+cat("Modelo        AIC        BIC       AICc\n")
+cat("ARIMA(1,1,0):", round(modelo_transporte_110$aic,2), " ", 
+    round(modelo_transporte_110$bic,2), " ", round(modelo_transporte_110$aicc,2), "\n")
+cat("ARIMA(0,1,1):", round(modelo_transporte_011$aic,2), " ", 
+    round(modelo_transporte_011$bic,2), " ", round(modelo_transporte_011$aicc,2), "\n")
+cat("ARIMA(1,1,1):", round(modelo_transporte_111$aic,2), " ", 
+    round(modelo_transporte_111$bic,2), " ", round(modelo_transporte_111$aicc,2), "\n")
+```
+
+> **Modelo seleccionado: ARIMA(1,1,0)**
+> - **Criterios de información**: Presenta el menor AIC (-1223.29) y menor BIC (-1213.02)
+> - **Principio de parsimonia**: Es el modelo más simple (solo un parámetro AR) y tiene el mejor ajuste
+> - **Coeficientes estimados**:
+>   - AR(1) = 0.4516 (s.e. = 0.0590): **Altamente significativo (p < 0.001)**
+>   - Drift = 0.0038: Inflación mensual promedio de 0.38%
+> - **Diagnóstico**: Test de Ljung-Box p-valor = 0.162 > 0.05 
+>   - **No se rechaza H0**: Residuos sin autocorrelación
+> - **Varianza residual**: varianza^2 = 2.625×10^4 (la más alta de todas, confirmando mayor volatilidad)
+
+> **Comparación con alternativas**:
+> - **ARIMA(0,1,1)**: Peor AIC/BIC y **FALLA el test de Ljung-Box** (p=0.006) 
+> - **ARIMA(1,1,1)**: Peor AIC/BIC que ARIMA(1,1,0), y el coeficiente MA no es significativo (MA=-0.0215, s.e.=0.1151), por lo que no aporta valor predictivo adicional.
+
+> **Interpretación económica**:
+> - El modelo **AR(1) puro** con coeficiente 0.45 indica que aproximadamente el 45% de un shock en precios del transporte persiste al mes siguiente.
+> - Esta persistencia moderada es consistente con:
+>   - **Ajustes graduales** en tarifas de transporte público
+>   - **Expectativas adaptativas** de transportistas ante cambios en combustibles
+>   - **Contratos de mediano plazo** que no se ajustan inmediatamente
+> - La ausencia de componente MA sugiere que los shocks no tienen efectos correctivos inmediatos, sino que se incorporan gradualmente a través del proceso autorregresivo.
+> - La **varianza residual más alta** (10 veces mayor que IPC Subyacente) confirma que el IPC Transporte es el más volátil e impredecible, fuertemente influenciado por:
+>   - Precios internacionales del petróleo (altamente volátiles)
+>   - Políticas gubernamentales de subsidios (pueden cambiar abruptamente)
+>   - Tipo de cambio (RD es importador neto de combustibles)
+
+```{r}
+# Diagnostico completo modelo seleccionado IPC Total
+cat("\n=== DIAGNOSTICO RESIDUOS: IPC TOTAL - ARIMA(1,1,1) ===\n")
+
+par(mfrow = c(2, 2))
+
+# Residuos en el tiempo
+plot(residuals(modelo_total_111), main = "Residuos - IPC Total ARIMA(1,1,1)", 
+     ylab = "Residuos", col = "darkblue")
+abline(h = 0, col = "red", lty = 2)
+
+# Histograma
+hist(residuals(modelo_total_111), breaks = 30, main = "Histograma de Residuos",
+     xlab = "Residuos", col = "lightblue", border = "darkblue")
+
+# ACF de residuos
+Acf(residuals(modelo_total_111), main = "ACF de Residuos", lag.max = 36)
+
+# Q-Q plot
+qqnorm(residuals(modelo_total_111), main = "Q-Q Plot")
+qqline(residuals(modelo_total_111), col = "red")
+```
+
+> El análisis de los residuos del modelo seleccionado ARIMA(1,1,1) para el IPC Total muestra:
+
+> Para el Panel de Residuos en el Tiempo, sus residuos fluctúan aleatoriamente alrededor de cero sin mostrar patrones sistemáticos, tendencias o cambios evidentes en la varianza (heterocedasticidad). Esta aleatoriedad es consistente con el supuesto de residuos ruido blanco. No se observan clusters de volatilidad pronunciados, lo que sugiere que la varianza es relativamente estable.
+> Para el Histograma, la distribución de los residuos es aproximadamente simétrica y campaniforme, similar a una distribución normal. No hay evidencia de asimetría pronunciada ni colas excesivamente pesadas. La distribución está centrada en cero, confirmando que los residuos tienen media cero.
+> En el ACF de Residuos, se observan que para todas las autocorrelaciones de los residuos están dentro de las bandas de confianza (líneas azules punteadas), confirmando que no hay estructura de autocorrelación residual. Esto valida que el modelo ARIMA(1,1,1) ha capturado adecuadamente toda la dependencia temporal de la serie, y los residuos se comportan como ruido blanco independiente.
+> En el Q-Q Plot, se obtuvieron unos puntos se alinean muy bien con la línea teórica (roja) de la distribución normal, especialmente en el centro de la distribución. Hay ligeras desviaciones en las colas extremas, pero estas son menores y aceptables. El gráfico confirma que los residuos siguen aproximadamente una distribución normal.
+
+> Conclusión: El modelo ARIMA(1,1,1) para el IPC Total cumple satisfactoriamente todos los supuestos:
+> Residuos con media cero
+> Varianza constante (homocedasticidad)
+> Sin autocorrelación
+> Distribución aproximadamente normal
+
+```{r}
+cat("\n=== DIAGNOSTICO RESIDUOS: IPC SUBYACENTE - ARIMA(3,1,1) ===\n")
+
+par(mfrow = c(2, 2))
+
+plot(residuals(modelo_subyacente_311), main = "Residuos - IPC Subyacente ARIMA(3,1,1)", 
+     ylab = "Residuos", col = "darkgreen")
+abline(h = 0, col = "red", lty = 2)
+
+hist(residuals(modelo_subyacente_311), breaks = 30, main = "Histograma de Residuos",
+     xlab = "Residuos", col = "lightgreen", border = "darkgreen")
+
+Acf(residuals(modelo_subyacente_311), main = "ACF de Residuos", lag.max = 36)
+
+qqnorm(residuals(modelo_subyacente_311), main = "Q-Q Plot")
+qqline(residuals(modelo_subyacente_311), col = "red")
+```
+
+> **Panel Superior Izquierdo - Residuos en el Tiempo:**
+> Los residuos muestran fluctuación aleatoria alrededor de cero en su mayoría, pero se observan algunas características preocupantes:
+> - Hay algunos valores extremos (outliers) particularmente en la cola derecha (residuos positivos grandes)
+> - La variabilidad parece ligeramente heterogénea a lo largo del tiempo
+> - No hay tendencias claras ni patrones sistemáticos
+
+> **Panel Superior Derecho - Histograma:**
+> La distribución de los residuos es aproximadamente simétrica pero muestra:
+> - Una **cola derecha más pesada** (mayor frecuencia de residuos positivos extremos)
+> - La distribución es leptocúrtica (más picuda en el centro y con colas más pesadas que la normal)
+> - Esto sugiere presencia de outliers o eventos extremos no capturados por el modelo
+
+> **Panel Inferior Izquierdo - ACF de Residuos:**
+> La mayoría de las autocorrelaciones están dentro de las bandas de confianza, **pero** varios rezagos se aproximan peligrosamente a los límites o los superan ligeramente. Esto es consistente con el resultado del test de Ljung-Box que detectó autocorrelación residual significativa (p=0.000).
+
+> **Panel Inferior Derecho - Q-Q Plot:**
+> El gráfico muestra **desviaciones notables** de la normalidad:
+> - En las colas inferiores y superiores, los puntos se desvían de la línea teórica
+> - Las colas son más pesadas que las de una distribución normal
+> - Esto confirma que los residuos no siguen perfectamente una distribución normal
+
+> **Conclusión**: El modelo ARIMA(3,1,1) para IPC Subyacente es aceptable pero con reservas, ya que cuenta con una autocorrelación residual detectada (Ljung-Box p=0.000), al igual que desviaciones de la normalidad en las colas y por ultimo con posibles outliers o eventos extremos no modelados
+> 
+> Implicaciones:
+> 1. El modelo captura razonablemente la dinámica principal pero no toda la estructura
+> 2. Puede haber efectos estacionales residuales o quiebres estructurales no capturados
+> 3. Los pronósticos serán útiles pero con intervalos de confianza que pueden subestimar la incertidumbre real
+> 4. En trabajos futuros, considerar:
+>    - Modelos SARIMA para estacionalidad
+>    - Análisis de intervención para outliers
+>    - Modelos no lineales o con cambio de régimen
+>    - Heterocedasticidad condicional (GARCH)
+
+```{r}
+cat("\n=== DIAGNOSTICO RESIDUOS: IPC ALIMENTOS - ARIMA(1,1,1) ===\n")
+
+par(mfrow = c(2, 2))
+
+plot(residuals(modelo_alimentos_111), main = "Residuos - IPC Alimentos ARIMA(1,1,1)", 
+     ylab = "Residuos", col = "darkorange")
+abline(h = 0, col = "red", lty = 2)
+
+hist(residuals(modelo_alimentos_111), breaks = 30, main = "Histograma de Residuos",
+     xlab = "Residuos", col = "lightyellow", border = "darkorange")
+
+Acf(residuals(modelo_alimentos_111), main = "ACF de Residuos", lag.max = 36)
+
+qqnorm(residuals(modelo_alimentos_111), main = "Q-Q Plot")
+qqline(residuals(modelo_alimentos_111), col = "red")
+```
+
+> Los Residuos en el Tiempo, fluctúan alrededor de cero, pero se observa, mayor volatilidad en el inicio de la serie (2006-2008), coincidiendo con la crisis de precios de alimentos de 2007-2008, la volatilidad parece disminuir gradualmente hacia el final de la serie y hay algunos valores extremos tanto positivos como negativos, reflejando shocks importantes en precios de alimentos y esta la posibilidad de heterocedasticidad (varianza no constante)
+
+> En el Histograma,la distribución de residuos es aproximadamente simétrica y campaniforme:
+> Centrada en cero 
+> Forma aproximadamente normal
+> Algunas observaciones extremas en ambas colas
+
+> Para el ACF de Residuos, todas las autocorrelaciones de los residuos están dentro de las bandas de confianza, confirmando que no hay autocorrelación residual significativa. Esto es consistente con el test de Ljung-Box (p=0.062 > 0.05).
+
+> El Q-Q Plot, sus puntos se alinean razonablemente bien con la línea teórica de normalidad con buen ajuste en el centro de la distribución, desviaciones moderadas en la cola inferior (residuos negativos extremos), igeras desviaciones en la cola superior y estas desviaciones corresponden a los outliers observados en el gráfico de residuos
+
+> Conclusión, el modelo ARIMA(1,1,1) para IPC Alimentos es aceptable, debido a que cuenta sin autocorrelación residual (pasa Ljung-Box), residuos con media cero, posible heterocedasticidad (varianza no constante en el tiempo) y desviaciones leves de la normalidad en las colas
+
+> Interpretación económica: 
+>La mayor volatilidad observada en 2006-2008 refleja la crisis global de precios de alimentos. Los outliers corresponden a shocks agrícolas (sequías, huracanes) y fluctuaciones en commodities internacionales y se espera que un modelo GARCH podría capturar mejor la heterocedasticidad y para pronósticos, considerar intervalos de confianza más amplios debido a la volatilidad variable
+
+```{r}
+cat("\n=== DIAGNOSTICO RESIDUOS: IPC TRANSPORTE - ARIMA(1,1,0) ===\n")
+
+par(mfrow = c(2, 2))
+
+plot(residuals(modelo_transporte_110), main = "Residuos - IPC Transporte ARIMA(1,1,0)", 
+     ylab = "Residuos", col = "darkred")
+abline(h = 0, col = "red", lty = 2)
+
+hist(residuals(modelo_transporte_110), breaks = 30, main = "Histograma de Residuos",
+     xlab = "Residuos", col = "lightpink", border = "darkred")
+
+Acf(residuals(modelo_transporte_110), main = "ACF de Residuos", lag.max = 36)
+
+qqnorm(residuals(modelo_transporte_110), main = "Q-Q Plot")
+qqline(residuals(modelo_transporte_110), col = "red")
+```
+
+> Residuos en el Tiempo, los residuos muestran fluctuación aleatoria alrededor de cero con características notables:
+> - Alta volatilidad sostenida a lo largo de todo el período
+> - Varios valores extremos tanto positivos como negativos, reflejando shocks abruptos en precios del petróleo/combustibles
+> - No hay patrones sistemáticos ni tendencias
+> - La varianza parece relativamente constante (homocedasticidad), aunque alta
+
+> Histograma,la distribución de residuos es aproximadamente normal:
+> - Centrada en cero 
+> - Forma campaniforme simétrica
+> - Sin asimetría pronunciada
+> - Colas relativamente delgadas a pesar de la volatilidad
+
+> ACF de Residuos, todas las autocorrelaciones están dentro de las bandas de confianza, confirmando ausencia de autocorrelación residual. Esto es consistente con el test de Ljung-Box (p=0.162 > 0.05). El modelo ha capturado adecuadamente toda la dependencia temporal.
+
+> Q-Q Plot, los puntos se alinean muy bien con la línea teórica de normalidad, excelente ajuste en el centro, un buen ajuste en las colas, contiene confirmación de normalidad de los residuos
+
+> En conclusión, el modelo ARIMA(1,1,0) para IPC Transporte es excelente se observan residuos con media cero, sin autocorrelación residual, distribución normal de residuos, varianza constante
+
+> Interpretación económica:
+> A pesar de ser la serie más volátil (varianza^2 más alta), el modelo simple AR(1) captura adecuadamente su dinámica, los residuos grandes reflejan shocks exógenos (petróleo, políticas) que son, por naturaleza, impredecible. El modelo es apropiado para pronósticos, aunque los intervalos de confianza serán amplios debido a la alta volatilidad intrínseca. La simplicidad del modelo (solo AR(1)) sugiere que la dinámica del IPC Transporte, aunque volátil, es relativamente directa: shocks actuales afectan el siguiente período con persistencia del 45%, sin complicaciones adicionales
+
+
+```{r}
+knitr::asis_output("
+# RESUMEN FINAL - MODELOS SELECCIONADOS 
+")
+
+# Crear tabla resumen
+resumen_modelos <- data.frame(
+  Serie = c("IPC Total", "IPC Subyacente", "IPC Alimentos", "IPC Transporte"),
+  Modelo = c("ARIMA(1,1,1)", "ARIMA(3,1,1)", "ARIMA(1,1,1)", "ARIMA(1,1,0)"),
+  AIC = c(round(modelo_total_111$aic, 2),
+          round(modelo_subyacente_311$aic, 2),
+          round(modelo_alimentos_111$aic, 2),
+          round(modelo_transporte_110$aic, 2)),
+  BIC = c(round(modelo_total_111$bic, 2),
+          round(modelo_subyacente_311$bic, 2),
+          round(modelo_alimentos_111$bic, 2),
+          round(modelo_transporte_110$bic, 2)),
+  Sigma2 = c(round(modelo_total_111$sigma2, 8),
+             round(modelo_subyacente_311$sigma2, 8),
+             round(modelo_alimentos_111$sigma2, 8),
+             round(modelo_transporte_110$sigma2, 4))
+)
+
+print(resumen_modelos)
+
+knitr::asis_output("
+# INTERPRETACION ECONOMICA 
+")
+
+
+
+cat("1. IPC TOTAL - ARIMA(1,1,1):\n")
+cat("   - Persistencia moderada (AR=0.425)\n")
+cat("   - Los shocks de inflacion tienen efectos que duran varios meses\n")
+cat("   - Serie mas estable y predecible\n\n")
+
+cat("2. IPC SUBYACENTE - ARIMA(3,1,1):\n")
+cat("   - Mayor complejidad dinamica (3 rezagos AR)\n")
+cat("   - Refleja ajustes graduales de precios de bienes 'sticky'\n")
+cat("   - Importante para politica monetaria del Banco Central\n\n")
+
+cat("3. IPC ALIMENTOS - ARIMA(1,1,1):\n")
+cat("   - Mayor volatilidad (sigma2 mas alto)\n")
+cat("   - Shocks transitorios dominan (MA=0.55)\n")
+cat("   - Vulnerable a factores climaticos y externos\n\n")
+
+cat("4. IPC TRANSPORTE - ARIMA(1,1,0):\n")
+cat("   - Modelo mas simple (solo AR)\n")
+cat("   - Muy volatil (sigma2 alto)\n")
+cat("   - Directamente ligado a precios del petroleo\n\n")
+```
+
+
+>**CONCLUSIONES**
+
+>En el análisis univariado de los principales componentes del Índice de Precios al Consumidor de la República Dominicana mediante modelos ARIMA se evidencian diferencias sustanciales con respecto a la dinámica inflacionaria entre sectores. El IPC Subyacente presenta la mayor persistencia, reflejando rigideces de precios y ajustes graduales consistentes con procesos inflacionarios estructurales. En contraste, el IPC de Alimentos y el IPC de Transporte muestran mayor volatilidad y un predominio de shocks transitorios, asociados a factores externos como precios internacionales de commodities, energía y condiciones climáticas.
+
+>En este sentido, desde un enfoque de política monetaria, los resultados obtenidos sugieren que las fluctuaciones de corto plazo en la inflación agregada están impulsadas principalmente por componentes volátiles, mientras que la inflación subyacente constituye un indicador más adecuado de presiones inflacionarias de mediano plazo. En consecuencia, el monitoreo diferenciado de estos componentes resulta fundamental para la toma de decisiones del Banco Central de la República Dominicana. 
+
+>**HALLAZGOS PRINCIPALES**
+
+>1. Estacionariedad y Orden de Integración
+Las pruebas Dickey-Fuller Aumentadas confirmaron que las cuatro series de IPC en logaritmos son no estacionarias (tienen raíz unitaria), requiriendo una diferenciación para lograr estacionariedad. Todas las series son integradas de orden 1, I(1), lo que significa que, los niveles de precios siguen procesos de raíz unitaria (shocks permanentes), las tasas de inflación (primeras diferencias) son estacionarias y todos los modelos ARIMA estimados tienen d = 1
+
+>2. Modelos Identificados y Estimados
+
+>IPC TOTAL - ARIMA(1,1,1): Excelente
+Coeficientes: AR(1)=0.425, MA(1)=-0.013, drift=0.0038
+La interpretación, se observa una persistencia moderada de shocks; un aumento de 1% en inflación mensual tiene efecto del 0.42% el mes siguiente. Por otro lado, se obtuvieron residuos sin autocorrelación (Ljung-Box p=0.414), distribución normal. En conclusión, se obtuvo un modelo parsimonioso, bien ajustado y válido para pronósticos y la implicación económica, es que la inflación general muestra persistencia moderada, típica de economías con rigideces de precios
+
+>IPC SUBYACENTE - ARIMA(3,1,1): Aceptable con Reservas
+Coeficientes: AR(1)=1.052, AR(2)=-0.342, AR(3)=0.181, MA(1)=-0.648
+La dinámica compleja con ajustes graduales distribuidos en 3 meses, con un diagnóstico de autocorrelación residual persistente (Ljung-Box p=0.000), desviaciones de normalidad, a raiz de un problema, ocasionado porque el modelo no captura completamente la estructura temporal con una implicación económica, debido a que los precios subyacentes (excluyendo alimentos/energía) muestran ajustes lentos y complejos, típicos de bienes y servicios con precios sticky y la recomendación futuraseria considerar SARIMA, análisis de intervención, o modelos no lineales
+
+>IPC ALIMENTOS - ARIMA(1,1,1):  Aceptable
+Coeficientes: AR(1)=-0.165, MA(1)=0.550, drift=0.0047
+Interpretación: Dominancia de shocks transitorios (MA alto); efectos se disipan rápidamente
+Diagnóstico: Sin autocorrelación residual (p=0.062), ligera heterocedasticidad, leves desviaciones de normalidad
+Implicación económica: Los precios de alimentos responden fuertemente a shocks temporales (clima, cosechas) con efectos que decaen rápidamente. La mayor inflación promedio (0.47% mensual) y alta volatilidad tienen implicaciones para seguridad alimentaria.
+
+>IPC TRANSPORTE - ARIMA(1,1,0): Excelente
+Coeficientes: AR(1)=0.452, drift=0.0038
+Interpretación: Persistencia moderada; modelo simple pero efectivo
+Diagnóstico: Residuos sin autocorrelación (p=0.162), normalidad satisfecha
+Implicación económica: A pesar de ser el componente más volátil (varianza^2 10x mayor que Subyacente), tiene dinámica simple ligada directamente a precios del petróleo. La alta volatilidad refleja dependencia de shocks externos (petróleo internacional, tipo de cambio).
+
+>3. Volatilidad Comparativa
+El análisis de varianzas residuales revela heterogeneidad en la predictibilidad:
+Más predecible: IPC Subyacente (varianza^2=4.56×10-6)
+Menos predecible: IPC Transporte (varianza^2=3.0×10-4) - 65 veces más volátil
+Esta diferencia tiene implicaciones de política: el IPC Subyacente es el indicador más apropiado para guiar decisiones de tasa de interés del Banco Central, mientras que IPC Transporte requiere políticas de estabilización específicas (subsidios, reservas estratégicas).
+
+>4. Contexto Económico y Eventos Relevantes
+Los modelos estimados capturan la dinámica inflacionaria dominicana que incluye:
+2008-2009: Crisis financiera global y alza de commodities (inflación 10-12%)
+2011-2012: Segundo pico inflacionario por precios internacionales
+2015-2019: Período de relativa estabilidad (meta inflacionaria del BC)
+2020-2022: Shocks pandémicos, disrupciones de oferta, y presiones inflacionarias globales (inflación >8%)
+2023-2024: Proceso de normalización
+Los coeficientes estimados reflejan estas dinámicas:
+
+>Persistencia en IPC Total: Expectativas adaptativas y rigideces
+>Complejidad en Subyacente: Ajustes graduales de precios administrados y servicios
+>Shocks transitorios en Alimentos: Vulnerabilidad a factores externos
+>Alta volatilidad en Transporte: Dependencia de petróleo (RD importa >90% de combustibles)
+
+>**LIMITACIONES DEL ESTUDIO**
+En el analisis presente no se modeló estacionalidad, a pesar de trabajar con series desestacionalizadas, pueden existir efectos estacionales residuales, especialmente en IPC Subyacente.Al igual que heterocedasticidad no modelada, se observan indicios de varianza cambiante en el tiempo (IPC Alimentos), que modelos GARCH podrían capturar mejor.Así como la ausencia de variables exógenas, por lo que no se incluyeron covariables relevantes como tipo de cambio, precios del petróleo, salario mínimo, que podrían mejorar las proyecciones.Asimismo, se presentaron quiebres estructurales no formalizado, eventos como COVID-19, cambios de régimen monetario, no fueron modelados explícitamente mediante análisis de intervención.Por ultimo, linealidad asumida, ya que los modelos ARIMA son lineales; la dinámica inflacionaria podría tener componentes no lineales o de cambio de régimen no capturados.
+
+>**RECOMENDACIONES PARA ANÁLISIS FUTUROS**
+>Extensiones metodológicas:
+-Modelos SARIMA: Incorporar explícitamente componentes estacionales de período 12
+-Modelos ARIMAX: Incluir variables exógenas (tipo de cambio, petróleo, brecha producto)
+-Modelos GARCH: Capturar heterocedasticidad condicional, especialmente en IPC Alimentos y Transporte
+-Análisis de intervención: Modelar outliers y quiebres estructurales (COVID-19, huracanes, reformas)
+-Modelos de cambio de régimen: Considerar dinámicas diferentes en períodos de alta vs baja inflación
+-Modelos VAR/VECM: Analizar interdependencias entre componentes del IPC
+
+>Aplicaciones prácticas:
+Pronósticos de inflación: Los modelos pueden generar proyecciones 6-12 meses con intervalos de confianza
+Simulación de escenarios: Evaluar impactos de shocks (petróleo, tipo de cambio)
+Indicadores de alerta temprana: Detectar aceleraciones inflacionarias
+Evaluación de política monetaria: Analizar transmisión de tasas de interés a inflación subyacente
+
+>**CONTRIBUCIONES DEL ESTUDIO**
+Este trabajo contribuye al entendimiento de la dinámica inflacionaria dominicana mediante:
+La caracterización rigurosa de propiedades estadísticas de las series de IPC, la identificación de modelos parsimoniosos que capturan adecuadamente la dinámica de cada componente, cuantificación de persistencia y volatilidad de diferentes fuentes inflacionarias. Pero sobretodo, la evidencia empírica sobre la heterogeneidad de comportamientos entre componentes del IPC y por ultimo, la base metodológica para desarrollo de modelos de pronóstico más sofisticados. 
+
+>**IMPLICACIONES DE POLÍTICA ECONÓMICA**
+>Para el Banco Central de la República Dominicana:
+El IPC Subyacente debe ser el ancla principal para decisiones de tasa de interés por su estabilidad y menor volatilidad, el IPC Total es apropiado para comunicación con el público pero incluye componentes volátiles transitorios y la alta persistencia (AR>0.4) sugiere que shocks inflacionarios no se disipan rápidamente, requiriendo política monetaria proactiva
+
+>Para política fiscal y sectorial:
+El IPC Transporte, presenta una extrema volatilidad (66x más que Subyacente) justifica políticas de estabilización como reservas estratégicas de combustibles o bandas de precios. Por otro lado, el IPC Alimentos, cuenta con una naturaleza transitoria de shocks (MA alto) sugiere que subsidios temporales son más apropiados que intervenciones permanentes. En este sentido, la seguridad alimentaria, cuenta con una mayor inflación promedio en alimentos (0.47% mensual) requiere atención especial por su impacto en hogares vulnerables
+
+>**CONCLUSIÓN FINAL**
+En conclusión, a través de este análisis, se ha identificado y estimado satisfactoriamente modelos ARIMA para las cuatro series de IPC de la República Dominicana. Por medio de la implementación de los modelos seleccionados que son parsimoniosos, tienen buen ajuste estadístico (excepto IPC Subyacente con reservas), y proporcionan una base sólida para comprender la dinámica inflacionaria dominicana. Los hallazgos obtenidos en el desarrollo de este estudio confirman la heterogeneidad en el comportamiento de diferentes componentes inflacionarios: el IPC Subyacente es el más estable y complejo, el IPC Transporte el más volátil pero simple, el IPC Alimentos dominado por shocks transitorios, y el IPC Total como un balance de estas dinámicas.
+
+>De igual forma, se determina que los modelos estimados son herramientas útiles para pronósticos de inflación de corto y mediano plazo, evaluación de políticas monetarias y fiscales, comprensión de mecanismos de transmisión de shocks. Pero más importante, la dentificación de períodos de desviación de patrones históricos.Finalmente, este análisis subraya la importancia de utilizar metodologías econométricas rigurosas para la formulación de políticas macroeconómicas en economías pequeñas y abiertas como la República Dominicana, donde los shocks externos juegan un papel preponderante en la dinámica inflacionaria.
